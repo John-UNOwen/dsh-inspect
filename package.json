@@ -21,5 +21,10 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "^0.0.1",
     "schemastery": "^3.18.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

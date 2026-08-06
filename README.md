@@ -31,7 +31,8 @@ checkup 的红队环节就是负反馈——问题声明必须经受住攻击，
 
 ```
 dsh-inspect/
-├── package.json    # @dsh-external/dsh-inspect (MIT)
+├── package.json    # @dsh-external/dsh-inspect (MIT)（声明 dsh.bundle.patch）
+├── cordis.patch.yml  # bundle 补丁：按包名插入插件行
 ├── lib/index.js    # cordis 插件：注册 checkup/fix/review 三个工具（官方 workflow 引擎）
 ├── test/
 │   └── regression.test.mjs  # 回归测试：前两轮 10 项修复固化为可重跑用例（node:test）
@@ -62,18 +63,21 @@ cd plugins/dsh-inspect && node --test        # 零依赖，纯 node + node:test
 
 改动任何脚本行为后跑 `node --test`，回归立刻可见。
 
-## 安装（挂载）
+## 安装（新版 profile 插件机制）
 
-`~/.dsh/config.yaml` 追加（本机已挂载）：
+包声明了 `dsh.bundle.patch`（cordis.patch.yml），通过 `dsh plugin` 装进任意 profile：
 
-```yaml
-- insert:
-    - id: dsh-inspect
-      name: /path/to/dsh-inspect/lib/index.js   # 换成你的克隆/检出路径
+```bash
+dsh plugin --profile tui add git+https://github.com/dsh-external/dsh-inspect.git
 ```
 
-重启 `dsh` 生效。绝对路径加载，不需要 pnpm link，不触碰源码 checkout。
-卸载：删除上述 insert 块即可。
+重启 `dsh --profile tui` 生效：插件按包名加载，`checkup`/`fix`/`review` 随 profile 注入。
+> 若 pnpm 把 https URL 重写成 git+ssh（本机全局 git `insteadof` 配置所致），用上面的
+> `git+https://` 形式；`dsh plugin` 会提示需要 `allowBuilds` 时按提示在
+> `$DSH_HOME/profiles/<name>/pnpm-workspace.yaml` 加一行即可。
+
+卸载：`dsh plugin --profile tui remove @dsh-external/dsh-inspect`（或从 profile 的
+`package.json` 移除依赖并 `dsh plugin --profile tui update`）。
 
 ## 工具参数
 
