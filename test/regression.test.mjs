@@ -30,6 +30,7 @@
  *   ⑧ runWorkflow 透传 issues/rounds/passed → test '⑧'
  *   ⑨ 参数校验抛错（非数组/条目非对象）→ test '⑨'
  *   ⑩ 输出 schema 编译通过       → test '⑩'
+ *   ⑪ 跨轮上下文：第2轮起 worker/checker 附原始任务/验收标准/前几轮产出摘录 → test '⑪'×2
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -496,8 +497,61 @@ test('⑦ 轮次耗尽：未收敛段如实列出全部剩余问题', async () =
 })
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑧⑨⑩ 工具注册层：真实模块优先，纯 node 退化为 vm 求值（mock z/defineTool）
+// ⑪ fix 跨轮上下文：第2轮起的 worker/checker 附带原始任务/验收标准/前几轮
+// 产出摘录（每轮 slice(0,1200) 限长），实现员不脱离被检查对象从零重查
 // ════════════════════════════════════════════════════════════════════════════
+test('⑪ fix·第2轮 worker/checker 附带原始任务、验收标准与第1轮产出摘录', async () => {
+  const LONG = 'y'.repeat(2000)
+  const { result, prompts } = await runScript(SCRIPTS.fix, {
+    task: '原始任务T',
+    acceptance: '原始验收标准A',
+    issues: [{ level: '严重', issue: 'X1', evidence: 'ev1' }],
+  }, {
+    worker: ['第1轮实现输出：' + LONG, '第2轮实现输出：修复了C1'],
+    checker: [mk([{ level: '严重', issue: 'C1', evidence: 'e1' }]), mk([])],
+  })
+  assert.strictEqual(result.rounds, 2, '第1轮发现问题，第2轮收敛')
+
+  const [w1, w2] = promptsOf(prompts, '实现')
+  const [c1, c2] = promptsOf(prompts, '检查·')
+  assert.ok(!w1.includes('原始任务'), '第1轮 worker 不带跨轮上下文（首轮问题即原始问题）')
+  assert.ok(!c1.includes('原始任务'), '第1轮 checker 不带跨轮上下文')
+
+  for (const p of [w2, c2]) {
+    assert.ok(p.includes('原始任务：原始任务T'), '第2轮应附原始任务')
+    assert.ok(p.includes('原始验收标准：原始验收标准A'), '第2轮应附原始验收标准')
+    assert.ok(p.includes('上一轮产出（被检查对象，摘录）'), '第2轮应标注上一轮产出为被检查对象')
+    assert.ok(p.includes('第1轮产出摘录：'), '第2轮应含第1轮产出摘录')
+    assert.ok(p.includes('【任务】修复：X1'), '摘录应含原始步骤标题')
+    assert.ok(p.includes('第1轮实现输出：'), '摘录应含第1轮实现输出')
+    assert.ok(p.includes('y'.repeat(1000)), '摘录限长内应完整保留（slice 含【任务】前缀，正文保留约1180字符）')
+    assert.ok(!p.includes(LONG), '产出摘录必须限长（slice(0,1200)），不得整段塞入')
+  }
+  assert.ok(w2.includes('问题：C1'), '第2轮 worker 仍以检查员问题为修复任务')
+})
+
+test('⑪ fix·第3轮摘录累积前两轮产出，检查员也能看到第1轮产物', async () => {
+  const { result, prompts } = await runScript(SCRIPTS.fix, {
+    task: '原始任务T',
+    acceptance: '原始验收标准A',
+    issues: [{ level: '严重', issue: 'X1' }],
+  }, {
+    worker: ['w1', 'w2', 'w3'],
+    checker: [mk([{ level: '一般', issue: 'C1' }]), mk([{ level: '一般', issue: 'C2' }]), mk([])],
+  })
+  assert.strictEqual(result.rounds, 3)
+  const [w3] = promptsOf(prompts, '实现').slice(2)
+  const [c3] = promptsOf(prompts, '检查·').slice(2)
+  for (const p of [w3, c3]) {
+    assert.ok(p.includes('第1轮产出摘录：'), '第3轮应含第1轮产出摘录')
+    assert.ok(p.includes('第2轮产出摘录：'), '第3轮应含第2轮产出摘录')
+    assert.ok(p.includes('原始任务：原始任务T'), '第3轮仍附原始任务')
+    assert.ok(p.includes('w1') && p.includes('w2'), '前两轮实现产物都在上下文中')
+    assert.ok(p.includes('【任务】修复：X1'), '原始步骤标题仍可追溯')
+  }
+})
+
+
 
 let pluginPromise = null
 function loadPlugin() {
