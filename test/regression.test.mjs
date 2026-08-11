@@ -2,21 +2,24 @@
  * dsh-inspect 回归测试 —— 前两轮 10 项修复的固化为可重跑用例。
  *
  * 运行：cd plugins/dsh-inspect && node --test
- *（零依赖：不 import lib/index.js 的依赖，纯 node + 内置 node:test/node:vm。
+ *（零依赖：不 import src/index.ts 的依赖，纯 node + 内置 node:test/node:vm。
  *  Node ≤20 也可用 node --test test/；Node 22+ 把位置参数当 glob，目录参数
  *  需写成 node --test 'test/**' 或直接用默认发现 node --test。）
  *
  * 机制（镜像引擎）：
- * - 从 lib/index.js 抽取三个 String.raw 脚本（CHECKUP_SCRIPT / FIX_SCRIPT /
+ * - 从 src/index.ts 抽取三个 String.raw 脚本（CHECKUP_SCRIPT / FIX_SCRIPT /
  *   REVIEW_SCRIPT），并按模块加载时的行为插值
  *   ${JSON.stringify(ISSUES_SCHEMA)} / ${JSON.stringify(PLAN_SCHEMA)}；
  * - 用与引擎 runtime.ts 相同的 vm.Script 包装 '(async () => { body })()' 求值，
  *   全局钩子 phase / log / args / agent（按 label 从 mock 队列取值）/
  *   parallel（Promise.all 并发执行 thunk）；
- * - 工具注册层（⑧⑨⑩）：优先动态 import 真实模块（tsx/DSH 环境）；纯 node 下
- *   依赖不可解析（ERR_MODULE_NOT_FOUND）时退化为在 vm 中求值模块源码。vm 路径的
- *   mock 镜像 dsh-tools 的关键契约（DSL→原始 schema 编译、受支持子集断言、
- *   execute 参数校验），真实路径可用 tsx 交叉验证；两条路径跑同一组断言。
+ * - 工具注册层（⑧⑨⑩）：优先动态 import 真实模块（tsx/DSH 环境，Node ≥22.18
+ *   原生类型剥离直接 import .ts）；纯 node 下依赖不可解析
+ *   （ERR_MODULE_NOT_FOUND）时退化为在 vm 中求值模块源码——先用 node:module 的
+ *   stripTypeScriptTypes 剥离类型（原生剥离要求 erasable-only 语法，剥离失败
+ *   会响亮抛错，防止不可移植语法混入）。vm 路径的 mock 镜像 dsh-tools 的关键
+ *   契约（DSL→原始 schema 编译、受支持子集断言、execute 参数校验），真实路径
+ *   可用 tsx 交叉验证；两条路径跑同一组断言。
  *
  * 场景映射（与前两轮验证脚本 t-harness2/3、verify_*.mjs 一一对应）：
  *   ① 转义无字面 '\n'            → test '①'
@@ -34,13 +37,14 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { stripTypeScriptTypes } from 'node:module'
 import { test } from 'node:test'
 import vm from 'node:vm'
 
-const LIB_URL = new URL('../lib/index.js', import.meta.url)
+const LIB_URL = new URL('../src/index.ts', import.meta.url)
 const SRC = readFileSync(LIB_URL, 'utf8')
 
-// ── 脚本抽取：与 lib/index.js 中定义逐字一致的 schema 常量 ──────────────────
+// ── 脚本抽取：与 src/index.ts 中定义逐字一致的 schema 常量 ────────────────
 
 const ISSUES_SCHEMA = {
   type: 'object',
@@ -569,9 +573,10 @@ function loadPlugin() {
   return pluginPromise
 }
 
-/** 在 vm 中求值模块源码：剥离 import/export，注入 mock z 与 defineTool。 */
+/** 在 vm 中求值模块源码：先剥离类型（原生类型剥离契约），再移除 import/export，注入 mock z 与 defineTool。 */
 function evaluateModuleInVm() {
   let src = SRC
+  src = stripTypeScriptTypes(src) // throws on non-erasable syntax — keeps the source portable
   src = src.replace("import z from 'schemastery'", '')
   src = src.replace("import { defineTool } from '@deepseek-ai/dsh-tools'", '')
   src = src.replaceAll(/\bexport\s+/g, '')

@@ -33,11 +33,24 @@ checkup 的红队环节就是负反馈——问题声明必须经受住攻击，
 dsh-inspect/
 ├── package.json    # @dsh-external/dsh-inspect (MIT)（声明 dsh.bundle.patch）
 ├── cordis.patch.yml  # bundle 补丁：按包名插入插件行
-├── lib/index.js    # cordis 插件：注册 checkup/fix/review 三个工具（官方 workflow 引擎）
+├── src/index.ts    # cordis 插件：注册 checkup/fix/review 三个工具（官方 workflow 引擎；原生 TS，零构建）
+├── tsconfig.json   # typecheck 配置（project references 解析到 sibling deepseek-harness 源码）
 ├── test/
 │   └── regression.test.mjs  # 回归测试：前两轮 10 项修复固化为可重跑用例（node:test）
 └── README.md
 ```
+
+## 开发与检查
+
+```bash
+pnpm install        # 仅 typescript/@types/node（typecheck 用）
+pnpm run typecheck  # tsc -b，类型从 sibling deepseek-harness checkout 解析
+cd plugins/dsh-inspect && node --test   # 回归测试
+```
+
+源码即运行时：包入口直接指向 `src/index.ts`，无构建步骤——dsh 源码启动器（tsx hook）
+或 Node ≥22.18 原生类型剥离直接加载。要求 erasable-only TS 语法（无 enum/命名空间等），
+测试的 vm 路径用 `node:module` 的 `stripTypeScriptTypes` 剥离类型，会挡住不可移植写法。
 
 ## 测试（回归）
 
@@ -49,7 +62,8 @@ cd plugins/dsh-inspect && node --test        # 零依赖，纯 node + node:test
 
 `test/regression.test.mjs` 用与引擎相同的 `vm.Script '(async () => { body })()'` 包装 +
 全局钩子（`agent`/`parallel`/`phase`/`log`/`args`，agent 按 label 出 mock 队列）求值
-`lib/index.js` 里真实的三个脚本，把前两轮的 10 项修复固化为可重跑断言：
+`src/index.ts` 里真实的三个脚本（vm 路径先经 `stripTypeScriptTypes` 剥离类型），把前两轮的
+10 项修复固化为可重跑断言：
 
 ① 转义无字面 `'\n'`（提示词/报告用真实换行）；② 红队五态（有效/空数组/null/部分覆盖/
 幻觉剔除）；③ 子代理失败（checker/reviewer/merger/worker）如实标注不假干净；④ passed

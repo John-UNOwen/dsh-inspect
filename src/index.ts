@@ -16,27 +16,50 @@
  * 技能的价值在于激活正确的行为，而不是用复杂的模式词汇表达。
  * 底座复用官方 workflow 引擎（ctx.workflows）与内置工具（bash/fs/glob…）。
  *
+ * Native TypeScript source: the package entry points at this file and the
+ * runtime loads it through Node's native type stripping (>=22.18/24) or the
+ * dsh source launcher's tsx hook — no build step.
+ *
  * @module @dsh-external/dsh-inspect
  */
 
 import z from 'schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { Context } from 'cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+// Type-only: brings the `ctx.workflows` Context augmentation into this program.
+import type { WorkflowMeta } from '@deepseek-ai/dsh-workflow'
 
 export const name = 'dsh-inspect'
 
 /** Activate once the tool registry and the official workflow service are available. */
 export const inject = ['tools', 'workflows']
 
+/** Loader-validated plugin config (all keys optional: z.object keys default to optional). */
+export interface Config {
+  /** Child-provider override passed to every workflow run. */
+  subagentProvider?: string
+  /** Per-run total-child ceiling for every workflow run. */
+  maxTotalAgents?: number
+  /** Role-level model overrides, one per checkup/fix/review role. */
+  plannerModel?: string
+  workerModel?: string
+  checkerModel?: string
+  reviewerModel?: string
+  mergerModel?: string
+  redteamModel?: string
+}
+
 /**
  * Plugin configuration, validated by the cordis loader against this
- * schemastery schema before `apply` runs. Values that are present but
+ * schemastery schema before `apply` runs (official annotation pattern:
+ * packages/workflow/tool-workflow/src/index.ts). Values that are present but
  * type-invalid (or violate constraints) fail loud at load; missing keys are
  * treated as optional by schemastery (z.object keys default to optional) and
  * pass silently, so defaults are applied by `apply` via optionalString /
- * positiveInt (official tool-workflow convention:
- * packages/workflow/tool-workflow/src/index.ts).
+ * positiveInt.
  */
-export const Config = z.object({
+export const Config: z<Config> = z.object({
   /** Child-provider override passed to every workflow run. */
   subagentProvider: z.string(),
   /** Per-run total-child ceiling for every workflow run. */
@@ -58,7 +81,7 @@ const MODEL_KEYS = [
   ['reviewerModel', 'reviewer'],
   ['mergerModel', 'merger'],
   ['redteamModel', 'redteam'],
-]
+] as const satisfies readonly (readonly [keyof Config, string])[]
 
 // ── 共享 schema（workflow 引擎子集：顶层与嵌套 required 数组均受支持并被使用）──────
 
@@ -84,7 +107,9 @@ const ISSUES_SCHEMA = {
 }
 
 // 工具输出 schema 里的 issues 形状（DSL 版：嵌套 value 节点不能用 required 数组，
-// 只能逐属性 required: true；与 ISSUES_SCHEMA 保持 level/issue 必填语义一致）
+// 只能逐属性 required: true；与 ISSUES_SCHEMA 保持 level/issue 必填语义一致）。
+// `as const` keeps the DSL literal types (type/enum/required) for defineTool's
+// inference — runtime behavior is identical.
 const ISSUES_OUTPUT_SCHEMA = {
   type: 'array',
   items: {
@@ -96,7 +121,7 @@ const ISSUES_OUTPUT_SCHEMA = {
       evidence: { type: 'string' },
     },
   },
-}
+} as const
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -117,6 +142,9 @@ const PLAN_SCHEMA = {
   },
   required: ['steps'],
 }
+
+/** One graded issue as produced by the checkup/review pipelines. */
+type Issue = { level: '严重' | '一般' | '建议'; issue: string; evidence?: string }
 
 // ── checkup：发现问题 ───────────────────────────────────────────────────────
 
@@ -530,24 +558,42 @@ return {
 
 // ── 工具注册 ────────────────────────────────────────────────────────────────
 
-function modelsFrom(config) {
-  const models = {}
+/** Script-side role overrides from the validated config (omitted keys stay absent). */
+function modelsFrom(config: Config): Record<string, string> {
+  const models: Record<string, string> = {}
   for (const [key, field] of MODEL_KEYS) {
-    if (config[key] !== undefined) models[field] = config[key]
+    const value = config[key]
+    if (value !== undefined) models[field] = value
   }
   return models
 }
 
-export function apply(ctx, config = {}) {
+/** One workflow run request as built by the tool registrations below. */
+interface WorkflowRunRequest {
+  script: string
+  meta: WorkflowMeta
+  args?: unknown
+}
+
+/** The tool result shape all three tools share (script-owned fields pass through). */
+type ToolResult = {
+  ok: boolean
+  report: string
+  issues?: Issue[]
+  rounds?: number
+  passed?: boolean
+}
+
+export function apply(ctx: Context, config: Config = {}) {
   // The exported Config schema validates at load; these checks keep
   // misconfiguration loud for programmatic callers that skip the loader.
   const subagentProvider = optionalString(config.subagentProvider, 'subagentProvider')
   for (const [key] of MODEL_KEYS) optionalString(config[key], key)
   const maxTotalAgents = config.maxTotalAgents === undefined
     ? undefined
-    : positiveInt(config.maxTotalAgents, undefined, 'maxTotalAgents')
+    : positiveInt(config.maxTotalAgents, 0, 'maxTotalAgents')
   const models = modelsFrom(config)
-  const common = {
+  const common: { subagentProvider?: string; maxTotalAgents?: number } = {
     ...(subagentProvider !== undefined ? { subagentProvider } : {}),
     ...(maxTotalAgents !== undefined ? { maxTotalAgents } : {}),
   }
@@ -594,7 +640,7 @@ export function apply(ctx, config = {}) {
             { title: '检查', detail: 'Parallel checkers + merge' },
             { title: '红队', detail: 'Adversarial red-team attack on top claims' },
           ],
-        },
+        } satisfies WorkflowMeta,
         args: {
           target,
           ...(angles.length > 0 ? { angles } : {}),
@@ -656,7 +702,7 @@ export function apply(ctx, config = {}) {
             { title: '检查·第2轮', detail: 'Adversarial check, fix loop' },
             { title: '检查·第3轮', detail: 'Adversarial check, fix loop' },
           ],
-        },
+        } satisfies WorkflowMeta,
         args: {
           task,
           ...(issues !== undefined ? { issues } : {}),
@@ -709,7 +755,7 @@ export function apply(ctx, config = {}) {
           name: 'inspect-review',
           description: 'Parallel multi-angle quality review with deduped graded issues.',
           phases: [{ title: '复查', detail: 'Parallel reviewers + merge' }],
-        },
+        } satisfies WorkflowMeta,
         args: {
           target,
           ...(dims.length > 0 ? { dimensions: dims } : {}),
@@ -724,7 +770,13 @@ export function apply(ctx, config = {}) {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-async function runWorkflow(ctx, common, request, parent, signal) {
+async function runWorkflow(
+  ctx: Context,
+  common: { subagentProvider?: string; maxTotalAgents?: number },
+  request: WorkflowRunRequest,
+  parent: Agent,
+  signal: AbortSignal,
+): Promise<ToolResult> {
   const run = ctx.workflows.start({ ...request, ...common, parent, signal })
 
   // Bridge the tool's abort signal to the run: if the parent step is aborted
@@ -740,16 +792,20 @@ async function runWorkflow(ctx, common, request, parent, signal) {
     if (result.stopReason !== 'completed') {
       throw new Error(`workflow run ${result.stopReason}${result.error !== undefined ? ` (${result.error})` : ''}`)
     }
-    const value = result.value
-    if (value === null || typeof value !== 'object' || typeof value.report !== 'string') {
+    const raw: unknown = result.value
+    if (raw === null || typeof raw !== 'object') {
+      throw new Error('workflow returned no report')
+    }
+    const record = raw as Record<string, unknown>
+    if (typeof record.report !== 'string') {
       throw new Error('workflow returned no report')
     }
     // 透传各脚本实际返回的结构化字段（checkup: issues / fix: rounds /
     // review: issues+passed），脚本没返回的字段不给。
-    const out = { ok: true, report: value.report }
-    for (const key of ['issues', 'rounds', 'passed']) {
-      if (value[key] !== undefined) out[key] = value[key]
-    }
+    const out: ToolResult = { ok: true, report: record.report }
+    if (record.issues !== undefined) out.issues = record.issues as Issue[]
+    if (record.rounds !== undefined) out.rounds = record.rounds as number
+    if (record.passed !== undefined) out.passed = record.passed as boolean
     return out
   } finally {
     signal.removeEventListener('abort', onAbort)
@@ -758,7 +814,7 @@ async function runWorkflow(ctx, common, request, parent, signal) {
   }
 }
 
-function splitList(raw) {
+function splitList(raw: string | undefined): string[] {
   if (typeof raw !== 'string') return []
   return raw.split(/[,，]/).map((s) => s.trim()).filter((s) => s.length > 0)
 }
@@ -767,16 +823,16 @@ function splitList(raw) {
  * Parse the issues/fixed_issues JSON-array text parameter (declared shape
  * [{level, issue, evidence}]). 缺省/空串按未提供处理；解析失败、结果非数组、
  * 或条目不是对象（null / 数组 / 其他原始值）时抛错——绝不静默降级。
- * @returns {Array|undefined} parsed array of issue objects, or undefined when not provided.
+ * @returns parsed array of issue objects, or undefined when not provided.
  */
-function parseIssueList(raw, label) {
+function parseIssueList(raw: string | undefined, label: string): Issue[] | undefined {
   if (raw === undefined || raw === null) return undefined
   if (typeof raw !== 'string') {
     throw new Error(`${label} 必须是 JSON 数组（[{level, issue, evidence}]）`)
   }
   const text = raw.trim()
   if (text.length === 0) return undefined
-  let parsed
+  let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
@@ -790,10 +846,10 @@ function parseIssueList(raw, label) {
       throw new Error(`${label} 的每个条目必须是对象（{level, issue, evidence}），收到：${JSON.stringify(item)}`)
     }
   }
-  return parsed
+  return parsed as Issue[]
 }
 
-function positiveInt(value, fallback, label) {
+function positiveInt(value: unknown, fallback: number, label: string): number {
   if (value === undefined || value === null) return fallback
   const n = Number(value)
   if (!Number.isInteger(n) || n < 1) {
@@ -802,7 +858,7 @@ function positiveInt(value, fallback, label) {
   return n
 }
 
-function optionalString(value, label) {
+function optionalString(value: string | undefined, label: string): string | undefined {
   if (value === undefined || value === null) return undefined
   if (typeof value !== 'string') {
     throw new Error(`dsh-inspect: ${label} must be a string`)
