@@ -79,21 +79,40 @@ cd plugins/dsh-inspect && node --test        # 零依赖，纯 node + node:test
 
 改动任何脚本行为后跑 `node --test`，回归立刻可见。
 
-## 安装（新版 profile 插件机制）
+## 安装与使用方式
 
-包声明了 `dsh.bundle.patch`（cordis.patch.yml），通过 `dsh plugin` 装进任意 profile：
+包声明了 `dsh.bundle.patch`（cordis.patch.yml），通过 `dsh plugin` 装进**任意** profile
+（把 `<profile>` 换成 `tui` / `headless` / `web` 或自建 profile）：
 
 ```bash
-dsh plugin --profile tui add git+https://github.com/dsh-external/dsh-inspect.git
+dsh plugin --profile <profile> add git+https://github.com/dsh-external/dsh-inspect.git
+dsh --profile <profile>        # 重启生效：checkup / fix / review 随 profile 注入
 ```
 
-重启 `dsh --profile tui` 生效：插件按包名加载，`checkup`/`fix`/`review` 随 profile 注入。
 > 若 pnpm 把 https URL 重写成 git+ssh（本机全局 git `insteadof` 配置所致），用上面的
 > `git+https://` 形式；`dsh plugin` 会提示需要 `allowBuilds` 时按提示在
 > `$DSH_HOME/profiles/<name>/pnpm-workspace.yaml` 加一行即可。
 
-卸载：`dsh plugin --profile tui remove @dsh-external/dsh-inspect`（或从 profile 的
-`package.json` 移除依赖并 `dsh plugin --profile tui update`）。
+三个工具由模型按工具描述自动触发，也可以直接说人话：
+
+- **闭环（推荐）**：先 `checkup` 找问题 → 把问题清单原样交给 `fix` 修 → 用 `review`
+  复查交付物。例：「用 checkup 检查 ./src，把问题清单喂给 fix 修复，修完 review 把关」。
+- **单用**：只体检不修 → checkup（`angles` 指定角度）；只做交付 → fix（`acceptance`
+  给总体验收标准）；只把关 → review（`fixed_issues` 传要逐条重跑验证的修复清单，
+  没消失报「严重」）。
+- **反复**：review 不过（或人对交付不满意）→ 把反馈作为新问题再进 fix，直到收敛。
+
+**依赖要求**：profile 的组合必须包含官方 workflow 引擎与工具注册服务——`dsh` 官方
+base 组合自带，无需额外安装；peer 依赖（`@deepseek-ai/dsh-tools` 等）由组合提供，
+profile 的 `autoInstallPeers: false` 可避免向 registry 查找未发布的 `@deepseek-ai/*`。
+
+**更新 / 卸载**：
+
+```bash
+dsh plugin --profile <profile> update
+dsh plugin --profile <profile> remove @dsh-external/dsh-inspect
+# 或：从 profile 的 package.json 移除依赖后 dsh plugin --profile <profile> update
+```
 
 ## 工具参数
 
