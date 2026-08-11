@@ -31,7 +31,7 @@
  *   ⑥ 4 问题全部重修             → test '⑥'
  *   ⑦ 未收敛明细                 → test '⑦'
  *   ⑧ runWorkflow 透传 issues/rounds/passed → test '⑧'
- *   ⑨ 参数校验抛错（非数组/条目非对象）→ test '⑨'
+ *   ⑨ 参数校验抛错（非数组/条目非对象/缺必填字段）→ test '⑨'
  *   ⑩ 输出 schema 编译通过       → test '⑩'
  *   ⑪ 跨轮上下文：第2轮起 worker/checker 附原始任务/验收标准/前几轮产出摘录 → test '⑪'×2
  */
@@ -954,12 +954,23 @@ test('⑧ runWorkflow 透传 issues/rounds/passed', async () => {
   assert.strictEqual(fixReq.signal, signal, 'signal 透传给引擎')
   assert.deepEqual(plain(fixReq.args.issues), [{ level: '一般', issue: 'X' }], 'issues 以解析后的数组透传')
   assert.ok(!('subagentProvider' in fixReq), '未配置时不传 subagentProvider')
+
+  // 配置语义：maxTotalAgents 为 null/undefined 时请求省略该键（引擎用默认上限），
+  // 绝不写入 0；0 在 apply 时即被正数校验拒绝（fail loud，与旧 JS 一致）。
+  const { ctx: nullCtx, defs: nullDefs, requests: nullReqs } = stubContext(() => ({ report: 'r' }))
+  mod.apply(nullCtx, { maxTotalAgents: null })
+  const nullExec = { agent: parent, signal }
+  await nullDefs[0].execute({ target: 'T' }, nullExec)
+  assert.strictEqual(nullReqs.length, 1)
+  assert.ok(!('maxTotalAgents' in nullReqs[0]), 'maxTotalAgents: null 不写入请求（引擎默认）')
+  const zeroCtx = stubContext(() => ({ report: 'r' })).ctx
+  assert.throws(() => mod.apply(zeroCtx, { maxTotalAgents: 0 }), /positive integer/, 'maxTotalAgents: 0 在 apply 即拒绝')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑨ 参数校验抛错：非数组 / 条目非对象 绝不静默降级
+// ⑨ 参数校验抛错：非数组 / 条目非对象 / 缺必填字段 绝不静默降级
 // ════════════════════════════════════════════════════════════════════════════
-test('⑨ 参数校验抛错（非数组/条目非对象）', async () => {
+test('⑨ 参数校验抛错（非数组/条目非对象/缺必填字段）', async () => {
   const { mod } = await loadPlugin()
   const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
   mod.apply(ctx, {})
@@ -973,6 +984,8 @@ test('⑨ 参数校验抛错（非数组/条目非对象）', async () => {
   await assert.rejects(byName.fix.execute({ task: 'T', issues: '[1,2]' }, exec), /每个条目必须是对象/, '条目非对象抛错')
   await assert.rejects(byName.fix.execute({ task: 'T', issues: '[null]' }, exec), /每个条目必须是对象/, '条目 null 抛错')
   await assert.rejects(byName.fix.execute({ task: 'T', issues: '[[1]]' }, exec), /每个条目必须是对象/, '条目是数组抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[{"level":"一般"}]' }, exec), /必须有字符串 issue/, '缺 issue 抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[{"issue":"X"}]' }, exec), /必须有字符串 level/, '缺 level 抛错')
   assert.strictEqual(started(), 0, '抛错时不进入 workflows.start')
 
   const fixOk = await byName.fix.execute({ task: 'T', issues: '[{"level":"一般","issue":"X"}]' }, exec)

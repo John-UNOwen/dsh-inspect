@@ -16,9 +16,12 @@
  * 技能的价值在于激活正确的行为，而不是用复杂的模式词汇表达。
  * 底座复用官方 workflow 引擎（ctx.workflows）与内置工具（bash/fs/glob…）。
  *
- * Native TypeScript source: the package entry points at this file and the
- * runtime loads it through Node's native type stripping (>=22.18/24) or the
- * dsh source launcher's tsx hook — no build step.
+ * Native TypeScript source: the package entry points at this file and no build
+ * step exists. In a dsh profile the package lives under node_modules, so it
+ * loads through the dsh source launcher's whole-process tsx hook (Node's
+ * native type stripping refuses files under node_modules); a checkout run
+ * outside node_modules can also load via Node >=22.18 native stripping.
+ * Syntax must stay erasable-only (no enums/namespaces/parameter properties).
  *
  * @module @dsh-external/dsh-inspect
  */
@@ -589,7 +592,9 @@ export function apply(ctx: Context, config: Config = {}) {
   // misconfiguration loud for programmatic callers that skip the loader.
   const subagentProvider = optionalString(config.subagentProvider, 'subagentProvider')
   for (const [key] of MODEL_KEYS) optionalString(config[key], key)
-  const maxTotalAgents = config.maxTotalAgents === undefined
+  // null/undefined both mean "leave the engine default" (old JS contract:
+  // positiveInt(..., undefined, ...) omitted the key — keep it omitted).
+  const maxTotalAgents = config.maxTotalAgents === undefined || config.maxTotalAgents === null
     ? undefined
     : positiveInt(config.maxTotalAgents, 0, 'maxTotalAgents')
   const models = modelsFrom(config)
@@ -844,6 +849,15 @@ function parseIssueList(raw: string | undefined, label: string): Issue[] | undef
   for (const item of parsed) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
       throw new Error(`${label} 的每个条目必须是对象（{level, issue, evidence}），收到：${JSON.stringify(item)}`)
+    }
+    // 契约（类型 Issue 与工具描述）要求 level + issue 必填：缺字段的条目
+    // 一旦进入脚本会让级别过滤/问题文本静默退化，这里 fail loud，绝不透传。
+    const record = item as Record<string, unknown>
+    if (typeof record.issue !== 'string' || record.issue.trim().length === 0) {
+      throw new Error(`${label} 的每个条目必须有字符串 issue，收到：${JSON.stringify(item)}`)
+    }
+    if (typeof record.level !== 'string' || record.level.trim().length === 0) {
+      throw new Error(`${label} 的每个条目必须有字符串 level，收到：${JSON.stringify(item)}`)
     }
   }
   return parsed as Issue[]

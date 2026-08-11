@@ -48,9 +48,11 @@ pnpm run typecheck  # tsc -b，类型从 sibling deepseek-harness checkout 解�
 cd plugins/dsh-inspect && node --test   # 回归测试
 ```
 
-源码即运行时：包入口直接指向 `src/index.ts`，无构建步骤——dsh 源码启动器（tsx hook）
-或 Node ≥22.18 原生类型剥离直接加载。要求 erasable-only TS 语法（无 enum/命名空间等），
-测试的 vm 路径用 `node:module` 的 `stripTypeScriptTypes` 剥离类型，会挡住不可移植写法。
+源码即运行时：包入口直接指向 `src/index.ts`，无构建步骤。profile 安装的副本位于
+node_modules 下，由 dsh 源码启动器的 tsx hook 加载（Node 原生类型剥离拒绝
+node_modules 内的文件）；源码 checkout 在 node_modules 外直跑时也可用 Node ≥22.18
+原生剥离。要求 erasable-only TS 语法（无 enum/命名空间等），测试的 vm 路径用
+`node:module` 的 `stripTypeScriptTypes` 剥离类型，会挡住不可移植写法。
 
 ## 测试（回归）
 
