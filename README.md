@@ -146,3 +146,12 @@ dsh plugin --profile <profile> remove @dsh-external/dsh-inspect
 但对抗式、根因验证、反馈校验是硬要求，简化的是表达不是机制。
 - **不碰 TUI**；取消传播（`exec.signal` 传入 workflow）；单点失败只在该处标注。
 
+
+## Profile 兼容性
+
+本插件运行时依赖 DSH 官方 workflow 引擎（`ctx.workflows`，peer：`@deepseek-ai/dsh-workflow`）
+与 `schemastery`（**运行时依赖**，已从 peer 移入 dependencies——官方 Profile 的
+`autoInstallPeers: false` 不会安装 peer）。请把它安装进**提供 workflows provider 的 Profile**；
+若 Profile 未声明该 provider（如部分 Web Profile 组合），Loader 会保持 pending——此时请先
+在 DSH Hub 登记 workflows provider 关系或改用提供该服务的组合。编译产物
+（`lib/types/index.js`）为官方 0810 生产入口，Node 原生可加载。

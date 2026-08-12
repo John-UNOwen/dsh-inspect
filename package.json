@@ -33,8 +33,7 @@
     "@deepseek-ai/dsh-agent": "^0.0.1",
     "@deepseek-ai/dsh-tools": "^0.0.1",
     "@deepseek-ai/dsh-workflow": "^0.0.1",
-    "cordis": "^4.0.0-rc.7",
-    "schemastery": "^3.18.0"
+    "cordis": "^4.0.0-rc.7"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
@@ -44,5 +43,8 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
   }
 }
