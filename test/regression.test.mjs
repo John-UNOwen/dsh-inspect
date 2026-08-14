@@ -34,6 +34,8 @@
  *   ⑨ 参数校验抛错（非数组/条目非对象/缺必填字段）→ test '⑨'
  *   ⑩ 输出 schema 编译通过       → test '⑩'
  *   ⑪ 跨轮上下文：第2轮起 worker/checker 附原始任务/验收标准/前几轮产出摘录 → test '⑪'×2
+ *   ⑫ workflows 缺失快速失败：inject 只含 tools（静态注入 workflows 会让条目
+ *      永久 pending 挂死整个 profile）；apply/execute 报清晰错误 → test '⑫'
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -1068,4 +1070,31 @@ test('模型接线：args.models 透传到各角色 agent opts.model', async () 
     checker: [mk([])],
   })
   assert.ok(!('model' in noModels.prompts.find((p) => p.label.startsWith('检查·')).opts), '未配置 models 时不带 model 键')
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑫ workflows 缺失快速失败：静态注入 workflows 在无 provider 的 profile（如
+//    标准 web 组合）里让条目永久 pending（waiting for service: workflows），
+//    挂死整个插件树直到宿主静默退出。修复后 inject 只含 tools，apply 与工具
+//    execute 对缺失服务报清晰错误（fail loud，绝不无声挂起）。
+// ════════════════════════════════════════════════════════════════════════════
+test('⑫ workflows 缺失：inject 不含 workflows；apply/execute 快速失败', async () => {
+  const { mod } = await loadPlugin()
+
+  // 回归锚点：workflows 绝不回到静态 inject（那会恢复永久 pending 挂死行为）。
+  // （Array.from 把 vm realm 的数组归一到 host realm，deepEqual 才不因原型不同误报。）
+  assert.deepEqual(Array.from(mod.inject), ['tools'], 'inject 只含 tools（workflows 由 apply 运行时守卫覆盖）')
+
+  // apply：无 workflows 服务 → 立即抛清晰错误（含指引），不注册任何工具。
+  const bareCtx = { tools: { register: () => { throw new Error('不应注册任何工具') } } }
+  assert.throws(() => mod.apply(bareCtx, {}), /no "workflows" service.*workflow engine/s,
+    'workflows 缺失时 apply 快速失败并给出指引')
+
+  // execute：apply 成功后服务中途消失（provider 停止）→ 清晰错误而非 TypeError。
+  const { ctx, defs } = stubContext(() => ({ report: 'r' }))
+  mod.apply(ctx, {})
+  delete ctx.workflows
+  const exec = { agent: { id: 'parent' }, signal: new EventTarget() }
+  await assert.rejects(defs.find((d) => d.name === 'checkup').execute({ target: 'T' }, exec),
+    /no "workflows" service.*workflow engine/s, '服务消失后 execute 报清晰错误（不是 TypeError）')
 })

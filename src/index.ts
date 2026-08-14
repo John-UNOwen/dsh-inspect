@@ -35,8 +35,17 @@ import type { WorkflowMeta } from '@deepseek-ai/dsh-workflow'
 
 export const name = 'dsh-inspect'
 
-/** Activate once the tool registry and the official workflow service are available. */
-export const inject = ['tools', 'workflows']
+/**
+ * Activate once the tool registry is available. The workflow engine is a hard
+ * runtime requirement but is deliberately NOT statically injected: cordis
+ * gates `apply` on every statically injected service, and in a profile where
+ * no plugin provides `workflows` (e.g. the standard web composition) the
+ * entry would sit `pending (waiting for service: workflows)` forever, hanging
+ * the whole entry group until the host silently exits. `apply` instead fails
+ * fast with an actionable error the moment the service is missing — see
+ * `assertWorkflows` below.
+ */
+export const inject = ['tools']
 
 /** Loader-validated plugin config (all keys optional: z.object keys default to optional). */
 export interface Config {
@@ -561,6 +570,25 @@ return {
 
 // ── 工具注册 ────────────────────────────────────────────────────────────────
 
+/**
+ * Runtime guard for the hard dependency. `ctx.workflows` is typed as always
+ * present by the dsh-workflow Context augmentation, but in a profile without
+ * a workflows provider the property is simply absent at runtime; the widened
+ * cast keeps the check honest for the compiler too. Thrown from `apply`,
+ * cordis marks this single entry failed (visible in the startup audit with
+ * the message below) while every other plugin activates normally; called
+ * again by `runWorkflow` to cover a provider revoked mid-session.
+ */
+function assertWorkflows(ctx: Context): void {
+  if ((ctx as { workflows?: Context['workflows'] }).workflows === void 0) {
+    throw new Error(
+      'dsh-inspect: no "workflows" service in this profile — checkup/fix/review all run on '
+      + 'the official workflow engine (@deepseek-ai/dsh-workflow). Use a profile whose '
+      + 'composition provides workflows (official base bundles) or add a provider plugin first.',
+    )
+  }
+}
+
 /** Script-side role overrides from the validated config (omitted keys stay absent). */
 function modelsFrom(config: Config): Record<string, string> {
   const models: Record<string, string> = {}
@@ -588,6 +616,10 @@ type ToolResult = {
 }
 
 export function apply(ctx: Context, config: Config = {}) {
+  // Fail fast on the missing hard dependency instead of hanging the profile
+  // (previously: the static inject kept this entry pending forever and the
+  // whole profile died with it).
+  assertWorkflows(ctx)
   // The exported Config schema validates at load; these checks keep
   // misconfiguration loud for programmatic callers that skip the loader.
   const subagentProvider = optionalString(config.subagentProvider, 'subagentProvider')
@@ -782,6 +814,9 @@ async function runWorkflow(
   parent: Agent,
   signal: AbortSignal,
 ): Promise<ToolResult> {
+  // `apply` fail-fast covers activation; this covers a provider revoked
+  // mid-session — same clear error instead of a TypeError on `.start`.
+  assertWorkflows(ctx)
   const run = ctx.workflows.start({ ...request, ...common, parent, signal })
 
   // Bridge the tool's abort signal to the run: if the parent step is aborted
