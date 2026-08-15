@@ -8,8 +8,8 @@
 # the official base compositions). In compositions without a workflows
 # provider (e.g. the standard web composition) the plugin deliberately does
 # NOT wait via static inject (that left the entry pending forever and hung
-# the whole profile); it fails fast at activation with an actionable error
-# instead, leaving every other plugin untouched.
+# the whole profile); the tools report an actionable error when invoked
+# without a provider, leaving the profile bootable and others untouched.
 
 - insert:
     - id: dsh-inspect
