@@ -573,20 +573,25 @@ return {
 /**
  * Runtime guard for the hard dependency. `ctx.workflows` is typed as always
  * present by the dsh-workflow Context augmentation, but in a profile without
- * a workflows provider the property is simply absent at runtime; the widened
- * cast keeps the check honest for the compiler too. Thrown from `apply`,
- * cordis marks this single entry failed (visible in the startup audit with
- * the message below) while every other plugin activates normally; called
- * again by `runWorkflow` to cover a provider revoked mid-session.
+ * a workflows provider the service is simply absent — read it through
+ * `ctx.get()` (the lenient, inject-free read); touching the `ctx.workflows`
+ * proxy accessor without a static inject declaration throws
+ * `cannot get property "workflows" without inject`. Thrown from
+ * `runWorkflow` only, NOT from `apply`: an entry that fails during apply
+ * drags its whole loader group down (observed as a silent hang and the host
+ * exiting ~40s later), so the profile must stay bootable and the tools must
+ * report the missing engine only when actually invoked.
  */
-function assertWorkflows(ctx: Context): void {
-  if ((ctx as { workflows?: Context['workflows'] }).workflows === void 0) {
+function requireWorkflows(ctx: Context): Context['workflows'] {
+  const workflows = ctx.get('workflows')
+  if (workflows === void 0) {
     throw new Error(
       'dsh-inspect: no "workflows" service in this profile — checkup/fix/review all run on '
       + 'the official workflow engine (@deepseek-ai/dsh-workflow). Use a profile whose '
       + 'composition provides workflows (official base bundles) or add a provider plugin first.',
     )
   }
+  return workflows
 }
 
 /** Script-side role overrides from the validated config (omitted keys stay absent). */
@@ -616,10 +621,8 @@ type ToolResult = {
 }
 
 export function apply(ctx: Context, config: Config = {}) {
-  // Fail fast on the missing hard dependency instead of hanging the profile
-  // (previously: the static inject kept this entry pending forever and the
-  // whole profile died with it).
-  assertWorkflows(ctx)
+  // Deliberately NOT checking the workflows dependency here: see
+  // requireWorkflows — an apply-time failure hangs the whole loader group.
   // The exported Config schema validates at load; these checks keep
   // misconfiguration loud for programmatic callers that skip the loader.
   const subagentProvider = optionalString(config.subagentProvider, 'subagentProvider')
@@ -814,10 +817,10 @@ async function runWorkflow(
   parent: Agent,
   signal: AbortSignal,
 ): Promise<ToolResult> {
-  // `apply` fail-fast covers activation; this covers a provider revoked
-  // mid-session — same clear error instead of a TypeError on `.start`.
-  assertWorkflows(ctx)
-  const run = ctx.workflows.start({ ...request, ...common, parent, signal })
+  // Covers both a provider that was never there and one revoked mid-session —
+  // same clear error instead of a TypeError on `.start`.
+  const workflows = requireWorkflows(ctx)
+  const run = workflows.start({ ...request, ...common, parent, signal })
 
   // Bridge the tool's abort signal to the run: if the parent step is aborted
   // while the script is in flight, cancel the whole run. The signal also
