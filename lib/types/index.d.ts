@@ -28,7 +28,17 @@
 import z from 'schemastery';
 import type { Context } from 'cordis';
 export declare const name = "dsh-inspect";
-/** Activate once the tool registry and the official workflow service are available. */
+/**
+ * Activate once the tool registry is available. The workflow engine is a hard
+ * runtime requirement but is deliberately NOT statically injected: cordis
+ * gates `apply` on every statically injected service, and in a profile where
+ * no plugin provides `workflows` (e.g. the standard web composition) the
+ * entry would sit `pending (waiting for service: workflows)` forever, hanging
+ * the whole entry group until the host silently exits. The plugin therefore
+ * loads (and registers its tools) in any profile; `runWorkflow` reads the
+ * service through `ctx.get()` and reports a clear, actionable error when a
+ * tool is invoked without a provider — see `requireWorkflows` below.
+ */
 export declare const inject: string[];
 /** Loader-validated plugin config (all keys optional: z.object keys default to optional). */
 export interface Config {

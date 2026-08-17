@@ -34,6 +34,8 @@
  *   ⑨ 参数校验抛错（非数组/条目非对象/缺必填字段）→ test '⑨'
  *   ⑩ 输出 schema 编译通过       → test '⑩'
  *   ⑪ 跨轮上下文：第2轮起 worker/checker 附原始任务/验收标准/前几轮产出摘录 → test '⑪'×2
+ *   ⑫ workflows 缺失快速失败：inject 只含 tools（静态注入 workflows 会让条目
+ *      永久 pending 挂死整个 profile）；apply/execute 报清晰错误 → test '⑫'
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -913,6 +915,8 @@ function stubContext(valueByMeta) {
       },
     },
   }
+  // 模拟 cordis 的宽松读取：ctx.get(name) 不做 inject 检查，缺服务返回 undefined。
+  ctx.get = (name) => ctx[name]
   return { ctx, defs, requests }
 }
 
@@ -1068,4 +1072,38 @@ test('模型接线：args.models 透传到各角色 agent opts.model', async () 
     checker: [mk([])],
   })
   assert.ok(!('model' in noModels.prompts.find((p) => p.label.startsWith('检查·')).opts), '未配置 models 时不带 model 键')
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑫ workflows 缺失快速失败：静态注入 workflows 在无 provider 的 profile（如
+//    标准 web 组合）里让条目永久 pending（waiting for service: workflows），
+//    挂死整个插件树直到宿主静默退出。修复后 inject 只含 tools，apply 与工具
+//    execute 对缺失服务报清晰错误（fail loud，绝不无声挂起）。
+// ════════════════════════════════════════════════════════════════════════════
+test('⑫ workflows 缺失：inject 不含 workflows；apply 照常、execute 清晰报错', async () => {
+  const { mod } = await loadPlugin()
+
+  // 回归锚点：workflows 绝不回到静态 inject（那会恢复永久 pending 挂死行为）。
+  // （Array.from 把 vm realm 的数组归一到 host realm，deepEqual 才不因原型不同误报。）
+  assert.deepEqual(Array.from(mod.inject), ['tools'], 'inject 只含 tools（workflows 由运行时守卫覆盖）')
+
+  // apply：无 workflows 服务也照常注册工具——apply 期抛错会挂死整个 loader
+  // 组（见 requireWorkflows 注释），profile 必须保持可启动。
+  const registered = []
+  const bareCtx = { tools: { register: (d) => registered.push(d) }, get: () => undefined }
+  mod.apply(bareCtx, {})
+  assert.ok(registered.some((d) => d.name === 'checkup'), 'workflows 缺失时 apply 仍注册工具')
+
+  // execute：服务缺失（从未存在）→ 清晰错误而非 TypeError。
+  const exec = { agent: { id: 'parent' }, signal: new EventTarget() }
+  await assert.rejects(registered.find((d) => d.name === 'checkup').execute({ target: 'T' }, exec),
+    /no "workflows" service.*workflow engine/s, '服务缺失时 execute 报清晰错误（不是 TypeError）')
+
+  // execute：apply 成功后服务中途消失（provider 停止）→ 同样清晰错误。
+  const { ctx, defs } = stubContext(() => ({ report: 'r' }))
+  mod.apply(ctx, {})
+  delete ctx.workflows
+  const exec2 = { agent: { id: 'parent' }, signal: new EventTarget() }
+  await assert.rejects(defs.find((d) => d.name === 'checkup').execute({ target: 'T' }, exec2),
+    /no "workflows" service.*workflow engine/s, '服务消失后 execute 报清晰错误（不是 TypeError）')
 })

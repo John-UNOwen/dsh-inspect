@@ -2,6 +2,14 @@
 # manifest field): inserts the checkup/fix/review rows into any profile that
 # lists @dsh-external/dsh-inspect in its `dsh.profile.bundles`.
 # The row loads the plugin by package name from the profile's node_modules.
+#
+# Runtime requirement: the profile's composition must provide the `workflows`
+# service (official workflow engine, @deepseek-ai/dsh-workflow — bundled with
+# the official base compositions). In compositions without a workflows
+# provider (e.g. the standard web composition) the plugin deliberately does
+# NOT wait via static inject (that left the entry pending forever and hung
+# the whole profile); the tools report an actionable error when invoked
+# without a provider, leaving the profile bootable and others untouched.
 
 - insert:
     - id: dsh-inspect

@@ -103,8 +103,10 @@ dsh --profile <profile>        # 重启生效：checkup / fix / review 随 profi
 - **反复**：review 不过（或人对交付不满意）→ 把反馈作为新问题再进 fix，直到收敛。
 
 **依赖要求**：profile 的组合必须包含官方 workflow 引擎与工具注册服务——`dsh` 官方
-base 组合自带，无需额外安装；peer 依赖（`@deepseek-ai/dsh-tools` 等）由组合提供，
-profile 的 `autoInstallPeers: false` 可避免向 registry 查找未发布的 `@deepseek-ai/*`。
+base 组合自带，无需额外安装；组合不含 workflow 引擎时（如标准 web 组合）本插件照常
+加载注册，`checkup`/`fix`/`review` 被调用时报出清晰的指引错误（不挂起 profile）。peer 依赖
+（`@deepseek-ai/dsh-tools` 等）由组合提供，profile 的 `autoInstallPeers: false` 可避免
+向 registry 查找未发布的 `@deepseek-ai/*`。
 
 **更新 / 卸载**：
 
@@ -151,7 +153,13 @@ dsh plugin --profile <profile> remove @dsh-external/dsh-inspect
 
 本插件运行时依赖 DSH 官方 workflow 引擎（`ctx.workflows`，peer：`@deepseek-ai/dsh-workflow`）
 与 `schemastery`（**运行时依赖**，已从 peer 移入 dependencies——官方 Profile 的
-`autoInstallPeers: false` 不会安装 peer）。请把它安装进**提供 workflows provider 的 Profile**；
-若 Profile 未声明该 provider（如部分 Web Profile 组合），Loader 会保持 pending——此时请先
-在 DSH Hub 登记 workflows provider 关系或改用提供该服务的组合。编译产物
-（`lib/types/index.js`）为官方 0810 生产入口，Node 原生可加载。
+`autoInstallPeers: false` 不会安装 peer）。请把它安装进**提供 workflows provider 的
+Profile**（官方 base 组合自带）。
+
+**缺失 workflows provider 的 Profile（如标准 web 组合）照常加载、调用时报错而不是挂起**：插件不在
+静态 `inject` 里声明 workflows（cordis 对静态注入的服务做硬门禁，缺 provider 会让条目
+永久停在 `pending (waiting for service: workflows)`，挂起整棵插件树直到宿主静默退出）；
+改为在 `apply` 里运行时检查，缺失即抛出带指引的清晰错误——启动审计会把该条目报为
+failed（附错误信息），Profile 其余插件照常激活。此时请改用提供 workflows 服务的组合，
+或先安装 workflows provider 插件后再启用本插件。编译产物（`lib/types/index.js`）为官方
+0810 生产入口，Node 原生可加载。
