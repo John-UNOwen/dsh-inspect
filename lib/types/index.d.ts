@@ -1,20 +1,26 @@
 /**
- * dsh-inspect — 发现问题 → 修复交付 → 质量复查 的简单闭环。
+ * dsh-inspect — a simple find → fix → review loop.
  *
- * 把用户的 harness-fault-hunting / agent-deliver / agent-review 三个技能合并成
- * 一个轻量插件，三个朴素工具共享同一套"检查"机制：
+ * Merges the harness-fault-hunting / agent-deliver / agent-review skills into
+ * one lightweight plugin; three plain tools share the same "check" mechanism:
  *
- *   checkup  发现问题：几个检查代理各看一个角度（质量/边界/安全…）→ 合并去重 → 问题清单
- *   fix      修复交付：拆解任务（或直接接收 checkup 的问题）→ 并行实现（各自跑样例自证）
- *            → 检查一遍 → 有严重/一般问题就修一轮 → 收敛后交付
- *   review   质量复查：几个审查代理并行检查交付物 → 汇总分级（严重/一般/建议）
+ *   checkup  find problems: a few checker agents each take one angle
+ *            (quality / edge cases / security…) → merge and deduplicate → problem list
+ *   fix      repair and deliver: break the task down (or take checkup's problems
+ *            directly) → implement in parallel (each worker proves its own fix)
+ *            → check once → if there are critical/major problems, fix another
+ *            round → deliver once converged
+ *   review   quality review: a few reviewer agents check the deliverable in
+ *            parallel → merge and grade (critical / major / minor)
  *
- * 闭环：checkup 的问题清单直接喂给 fix 作为修复任务；fix 的产物用 review 把关；
- * 复查不通过（或人的反馈）重新进入 fix。三个工具可以单独用，也可以串起来用。
+ * The loop: checkup's problem list feeds straight into fix as repair tasks;
+ * fix's output is gated by review; a failed review (or human feedback) goes
+ * back into fix. Each tool works on its own or chained.
  *
- * 设计原则：简单优先——用直白的"检查/问题/修复"语言，不堆砌复杂术语；
- * 技能的价值在于激活正确的行为，而不是用复杂的模式词汇表达。
- * 底座复用官方 workflow 引擎（ctx.workflows）与内置工具（bash/fs/glob…）。
+ * Design principle: simplicity first — plain "check / problem / fix" language,
+ * no piles of jargon; a skill's value is in triggering the right behavior, not
+ * in an elaborate vocabulary. Built on the official workflow engine
+ * (ctx.workflowEngine) and the built-in tools (bash/fs/glob…).
  *
  * Native TypeScript source: the package entry points at this file and no build
  * step exists. In a dsh profile the package lives under node_modules, so it
@@ -65,4 +71,10 @@ export interface Config {
  */
 export declare const Config: z<Config>;
 export declare function apply(ctx: Context, config?: Config): void;
+/**
+ * Split a list argument into items. Separators are tiered and only the
+ * strongest one present outside brackets is used: newline > `;`/`；` >
+ * `,`/`，`/`、`. Separators inside brackets never split.
+ */
+export declare function splitList(raw: string | undefined): string[];
 //# sourceMappingURL=index.d.ts.map

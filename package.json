@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-inspect",
-  "description": "发现问题 → 修复交付 → 质量复查 的简单闭环插件：checkup（对抗式检查+红队验证）/ fix（根因→修复→验证）/ review（对抗式复查）三个工具，基于官方 workflow 引擎。",
-  "version": "0.1.0",
+  "description": "A simple find → fix → review loop: checkup (adversarial checking + red-team verification), fix (root cause → fix → verify) and review (adversarial review), built on the official dsh workflow engine. Fork: English prompts and reports, works on dsh 0.1.6–0.2.x, mounted on the web app through the \"Standard + inspect\" agent preset.",
+  "version": "0.2.0-fork.1",
   "private": true,
   "type": "module",
   "main": "./lib/types/index.js",
@@ -19,6 +19,8 @@
   "files": [
     "src",
     "lib",
+    "presets",
+    "scripts",
     "cordis.patch.yml",
     "LICENSE",
     "README.md"
@@ -26,13 +28,14 @@
   "scripts": {
     "test": "node --test",
     "typecheck": "tsc -b --pretty false",
-    "build": "tsc -b --pretty false"
+    "build": "tsc -b --pretty false",
+    "gen-preset": "node scripts/gen-preset.mjs"
   },
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/dsh-agent": "^0.0.1",
-    "@deepseek-ai/dsh-tools": "^0.0.1",
-    "@deepseek-ai/dsh-workflow": "^0.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.6-0 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.6-0 <0.3.0-0",
+    "@deepseek-ai/dsh-workflow": ">=0.1.6-0 <0.3.0-0",
     "cordis": "^4.0.0-rc.7"
   },
   "devDependencies": {
@@ -41,10 +44,14 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": "./presets/standard-inspect.patch.yml"
     }
   },
   "dependencies": {
     "schemastery": "^3.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/John-UNOwen/dsh-inspect.git"
   }
 }

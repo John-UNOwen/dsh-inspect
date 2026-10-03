@@ -1,3 +1,46 @@
+# dsh-inspect (fork)
+
+Fork of [omdsh-dev/dsh-inspect](https://github.com/omdsh-dev/dsh-inspect): the `checkup` / `fix` / `review` tools for DeepSeek Harness (dsh), updated for dsh 0.1.6–0.2.x.
+
+## What this fork changes
+
+- **English prompts and reports.** Every agent prompt, report, tool description and error message is in English. Severity levels are `critical` / `major` / `minor`; issue lists from the original Chinese version (`严重` / `一般` / `建议`) are still accepted by `fix` and `review` and mapped automatically.
+- **Current workflow engine.** The official engine registers as `workflowEngine` (dsh ≥ 0.1.6); the old `workflows` name is kept as a fallback.
+- **Mounted inside an agent preset.** On the dsh web app each agent preset owns an isolated workflow engine, and tools outside the preset cannot reach it. This bundle adds a **"Standard + inspect"** preset — the shipped Standard preset plus dsh-inspect next to the preset's engine — instead of mounting the tools host-wide. Pick it in the web app's mode picker. The preset's engine runs workflow sub-agents one at a time (`maxConcurrentAgents: 1`).
+- **No recursion.** Workflow sub-agents see the same tools as their parent; `checkup` / `fix` / `review` refuse to start from inside a workflow sub-agent, so a sub-agent cannot set off nested runs without bound.
+- **Angle lists keep their details.** `angles` / `dimensions` split on the strongest separator present — one per line, else `;`, else `,` — and never inside brackets, so `accounting (cash, fees); data (panel, dates)` is two angles.
+
+## Install
+
+```powershell
+dsh plugin --profile web add "@dsh-external/dsh-inspect@github:John-UNOwen/dsh-inspect"
+```
+
+dsh adds the package to the profile's bundles, which inserts the "Standard + inspect" preset.
+
+## After a dsh update
+
+The preset is a copy of dsh's Standard preset, so regenerate it when dsh changes:
+
+```powershell
+node scripts/gen-preset.mjs            # finds @deepseek-ai/dsh-web-app next to the global dsh install
+node scripts/gen-preset.mjs --max-concurrent-agents 0   # engine default concurrency instead of 1
+```
+
+Then commit `presets/standard-inspect.patch.yml` and reinstall the plugin. The script stops with an error if the Standard preset's layout changed in a way it does not recognize.
+
+For a profile without agent presets (TUI/headless), see `cordis.patch.yml` (not loaded by default; the bundle patch is the preset).
+
+## Tests
+
+```powershell
+node --test
+```
+
+---
+
+The original (Chinese) documentation follows. Note that it predates this fork: levels and report text are now English, and the bundle mounts the tools through the preset described above.
+
 # @dsh-external/dsh-inspect
 
 **发现问题 → 修复交付 → 质量复查** 的简单闭环插件。

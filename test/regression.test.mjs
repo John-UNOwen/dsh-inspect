@@ -58,7 +58,7 @@ const ISSUES_SCHEMA = {
         type: 'object',
         additionalProperties: false,
         properties: {
-          level: { type: 'string', enum: ['严重', '一般', '建议'] },
+          level: { type: 'string', enum: ['critical', 'major', 'minor'] },
           issue: { type: 'string' },
           evidence: { type: 'string' },
         },
@@ -140,12 +140,12 @@ async function runScript(body, args, roles = {}) {
   context.agent = Object.freeze((prompt, opts = {}) => {
     const label = opts.label ?? ''
     state.prompts.push({ label, prompt, opts })
-    const role = label.startsWith('检查·') ? 'checker'
-      : label.startsWith('复查·') ? 'reviewer'
-        : label.startsWith('实现') ? 'worker'
-          : label === '红队' ? 'redteam'
-            : label === '汇总' ? 'merger'
-              : label === '规划' ? 'planner'
+    const role = label.startsWith('Check · ') ? 'checker'
+      : label.startsWith('Review · ') ? 'reviewer'
+        : label.startsWith('Implement ') ? 'worker'
+          : label === 'Red team' ? 'redteam'
+            : label === 'Merge' ? 'merger'
+              : label === 'Planner' ? 'planner'
                 : null
     if (!role) throw new Error('unexpected agent label: ' + label)
     // 引擎契约镜像（runtime.ts 对每个 agent() schema 执行 assertObjectJsonSchema）：
@@ -173,13 +173,13 @@ const plain = (value) => JSON.parse(JSON.stringify(value))
 // ════════════════════════════════════════════════════════════════════════════
 test('① 转义无字面 \\n（真实换行）', async () => {
   const FINDINGS = [
-    mk([{ level: '严重', issue: 'S1', evidence: 'e1' }, { level: '严重', issue: 'S2' }]),
-    mk([{ level: '一般', issue: 'M1' }, { level: '一般', issue: 'M2' }]),
-    mk([{ level: '建议', issue: 'A1' }, { level: '建议', issue: 'A2' }]),
+    mk([{ level: 'critical', issue: 'S1', evidence: 'e1' }, { level: 'critical', issue: 'S2' }]),
+    mk([{ level: 'major', issue: 'M1' }, { level: 'major', issue: 'M2' }]),
+    mk([{ level: 'minor', issue: 'A1' }, { level: 'minor', issue: 'A2' }]),
   ]
   const { result, prompts } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
     checker: FINDINGS,
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'S1', evidence: 'e1' }], refuted: ['S2'], reasoning: 'r' })],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'S1', evidence: 'e1' }], refuted: ['S2'], reasoning: 'r' })],
     merger: [echoMerger],
   })
   assert.ok(prompts.length >= 5, `checkup 应有 5 次 agent 调用，实际 ${prompts.length}`)
@@ -189,7 +189,7 @@ test('① 转义无字面 \\n（真实换行）', async () => {
   }
   assert.ok(result.report.includes('\n') && !result.report.includes('\\n'), 'checkup 报告应含真实换行且无字面 \\n')
 
-  const fix = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: '严重', issue: 'X1' }] }, {
+  const fix = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: 'critical', issue: 'X1' }] }, {
     worker: ['## 根因\n数据流偏离。\n## 实施\n已修复。\n## 验证\n复现通过。'],
     checker: [mk([])],
   })
@@ -214,25 +214,25 @@ test('① 转义无字面 \\n（真实换行）', async () => {
 // ② 红队五态
 // ════════════════════════════════════════════════════════════════════════════
 const RED_FINDINGS = [
-  mk([{ level: '严重', issue: 'W' }, { level: '严重', issue: 'X' }, { level: '一般', issue: 'Y' }]),
+  mk([{ level: 'critical', issue: 'W' }, { level: 'critical', issue: 'X' }, { level: 'major', issue: 'Y' }]),
   mk([]),
   mk([]),
 ]
 
 test('② 红队·有效：被推翻的剔除、未提及回流', async () => {
   const FINDINGS = [
-    mk([{ level: '严重', issue: 'S1', evidence: 'e1' }, { level: '严重', issue: 'S2' }]),
-    mk([{ level: '一般', issue: 'M1' }, { level: '一般', issue: 'M2' }]),
-    mk([{ level: '建议', issue: 'A1' }, { level: '建议', issue: 'A2' }]),
+    mk([{ level: 'critical', issue: 'S1', evidence: 'e1' }, { level: 'critical', issue: 'S2' }]),
+    mk([{ level: 'major', issue: 'M1' }, { level: 'major', issue: 'M2' }]),
+    mk([{ level: 'minor', issue: 'A1' }, { level: 'minor', issue: 'A2' }]),
   ]
   const { result, prompts } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
     checker: FINDINGS,
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'S1', evidence: 'e1' }], refuted: ['S2'], reasoning: 'S2 证据不足' })],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'S1', evidence: 'e1' }], refuted: ['S2'], reasoning: 'S2 证据不足' })],
     merger: [echoMerger],
   })
   assert.deepEqual(issueNames(result.issues), ['A1', 'A2', 'M1', 'M2', 'S1'], 'S2 被推翻剔除，其余全部保留')
-  assert.ok(result.report.includes('被推翻：S2'), '报告红队记录应列出被推翻项')
-  const redPrompt = promptsOf(prompts, '红队')[0] ?? ''
+  assert.ok(result.report.includes('Refuted: S2'), '报告红队记录应列出被推翻项')
+  const redPrompt = promptsOf(prompts, 'Red team')[0] ?? ''
   assert.ok(redPrompt.includes('S1') && redPrompt.includes('S2'), '红队提示词应含 top 问题声明')
 })
 
@@ -243,7 +243,7 @@ test('② 红队·空数组：{survived:[], refuted:[]} 视为未审查，全量
     merger: [echoMerger],
   })
   assert.strictEqual(result.issues.length, 3, '空数组是 schema 合法但内容退化，一条都不剔除')
-  assert.ok(result.report.includes('红队未返回有效结果'), '报告应标注红队未返回有效结果')
+  assert.ok(result.report.includes('The red team returned no valid result'), '报告应标注红队未返回有效结果')
 })
 
 test('② 红队·null：子代理失败视为未审查，全量保留', async () => {
@@ -253,49 +253,49 @@ test('② 红队·null：子代理失败视为未审查，全量保留', async (
     merger: [echoMerger],
   })
   assert.strictEqual(result.issues.length, 3, '红队 null 全量保留')
-  assert.ok(result.report.includes('红队未返回结果'), '报告应标注红队未返回结果')
+  assert.ok(result.report.includes('The red team returned no result'), '报告应标注红队未返回结果')
 })
 
 test('② 红队·部分覆盖：未提及的 top 项回流', async () => {
   const { result } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
     checker: RED_FINDINGS,
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'X' }], refuted: ['Y'], reasoning: '' })],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'X' }], refuted: ['Y'], reasoning: '' })],
     merger: [echoMerger],
   })
   assert.deepEqual(issueNames(result.issues), ['W', 'X'], '未提及的 W 必须回流，Y 被推翻剔除')
-  assert.ok(result.report.includes('未提及 1 项已保留'), '报告应标注未提及项已保留')
+  assert.ok(result.report.includes('1 item(s) not mentioned were kept'), '报告应标注未提及项已保留')
 })
 
 test('② 红队·幻觉剔除：survived 与 refuted 自相矛盾的条目被剔除', async () => {
   const { result } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
     checker: RED_FINDINGS,
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'X' }], refuted: ['X'], reasoning: 'X 自相矛盾' })],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'X' }], refuted: ['X'], reasoning: 'X 自相矛盾' })],
     merger: [echoMerger],
   })
   assert.deepEqual(issueNames(result.issues), ['W', 'Y'], '自相矛盾的 X 剔除，W/Y 保留')
-  assert.ok(result.report.includes('被推翻：X'), '报告应标注 X 被推翻')
+  assert.ok(result.report.includes('Refuted: X'), '报告应标注 X 被推翻')
 })
 
 test('② 红队·幻觉剔除：survived 未命中检查结果的新增声明被剔除，绝不注入', async () => {
   const { result } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
     checker: RED_FINDINGS,
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'H' }], refuted: ['Y'], reasoning: 'H 是红队幻觉' })],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'H' }], refuted: ['Y'], reasoning: 'H 是红队幻觉' })],
     merger: [echoMerger],
   })
   // flat=[W,X,Y]；H 未见于任何检查员输出（幻觉/新增声明）→ 剔除，绝不并入 candidates
   assert.deepEqual(issueNames(result.issues), ['W', 'X'], '幻觉条目 H 不得注入，W/X 回流')
-  assert.ok(result.report.includes('1 条红队新增声明未命中检查结果，已剔除。'), '红队记录应标注幻觉条目被剔除')
-  assert.ok(result.report.includes('被推翻：Y'), '被推翻的 Y 照常剔除')
+  assert.ok(result.report.includes('1 new claim(s) from the red team did not match any finding and were dropped.'), '红队记录应标注幻觉条目被剔除')
+  assert.ok(result.report.includes('Refuted: Y'), '被推翻的 Y 照常剔除')
 })
 
 test('② 红队·回归：全部建议级（无 top）不调用红队', async () => {
   const { result, prompts } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
-    checker: [mk([{ level: '建议', issue: 'A1' }]), mk([]), mk([])],
+    checker: [mk([{ level: 'minor', issue: 'A1' }]), mk([]), mk([])],
     merger: [echoMerger],
   })
   assert.deepEqual(issueNames(result.issues), ['A1'])
-  assert.ok(!prompts.some((p) => p.label === '红队'), '无高优先级问题时不调用红队')
-  assert.ok(result.report.includes('无高优先级问题可攻击'), '报告应标注无高优先级问题可攻击')
+  assert.ok(!prompts.some((p) => p.label === 'Red team'), '无高优先级问题时不调用红队')
+  assert.ok(result.report.includes('No high-priority problems to attack'), '报告应标注无高优先级问题可攻击')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -307,43 +307,43 @@ test('③ checkup·检查代理 null：如实标注，不宣称没发现问题',
     merger: [null],
   })
   assert.deepEqual(plain(result.issues), [], '无数据可保留时 issues=[]')
-  assert.ok(result.report.includes('3 个检查代理未返回结果'), '报告应标注 3 个检查代理未返回结果')
-  assert.ok(result.report.includes('汇总代理未返回结果'), '报告应标注汇总代理未返回结果')
-  assert.ok(result.report.includes('无法确认无问题'), '报告应标注无法确认无问题')
-  assert.ok(!result.report.includes('（没发现问题）'), '不得宣称「（没发现问题）」')
+  assert.ok(result.report.includes('3 checker(s) returned no result'), '报告应标注 3 个检查代理未返回结果')
+  assert.ok(result.report.includes('the merger returned no result'), '报告应标注汇总代理未返回结果')
+  assert.ok(result.report.includes('"no problems" cannot be confirmed'), '报告应标注无法确认无问题')
+  assert.ok(!result.report.includes('(No problems found.)'), '不得宣称「（没发现问题）」')
 })
 
 test('③ checkup·部分检查代理 null：统计如实', async () => {
   const { result } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
     checker: [
-      mk([{ level: '严重', issue: 'S1', evidence: 'e1' }, { level: '一般', issue: 'M1', evidence: 'e5' }]),
-      mk([{ level: '严重', issue: 'S2', evidence: 'e2' }, { level: '建议', issue: 'A1', evidence: 'e7' }]),
+      mk([{ level: 'critical', issue: 'S1', evidence: 'e1' }, { level: 'major', issue: 'M1', evidence: 'e5' }]),
+      mk([{ level: 'critical', issue: 'S2', evidence: 'e2' }, { level: 'minor', issue: 'A1', evidence: 'e7' }]),
       null,
     ],
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'S1', evidence: 'e1' }], refuted: [], reasoning: '只确认了 S1' })],
-    merger: [mk([{ level: '严重', issue: 'S1', evidence: 'e1' }, { level: '一般', issue: 'M1', evidence: 'e5' }])],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'S1', evidence: 'e1' }], refuted: [], reasoning: '只确认了 S1' })],
+    merger: [mk([{ level: 'critical', issue: 'S1', evidence: 'e1' }, { level: 'major', issue: 'M1', evidence: 'e5' }])],
   })
   assert.strictEqual(result.issues.length, 2, 'issues=汇总结果')
-  assert.ok(result.report.includes('1 个检查代理未返回结果'), '报告应标注 1 个检查代理未返回结果')
-  assert.ok(!result.report.includes('（没发现问题）'), '不得宣称「（没发现问题）」')
+  assert.ok(result.report.includes('1 checker(s) returned no result'), '报告应标注 1 个检查代理未返回结果')
+  assert.ok(!result.report.includes('(No problems found.)'), '不得宣称「（没发现问题）」')
 })
 
 test('③ checkup·汇总代理 null：候选问题全量保留', async () => {
   const { result } = await runScript(SCRIPTS.checkup, { target: 'T' }, {
     checker: [
-      mk([{ level: '严重', issue: 'S1', evidence: 'e1' }, { level: '一般', issue: 'M1', evidence: 'e5' }]),
-      mk([{ level: '严重', issue: 'S2', evidence: 'e2' }, { level: '建议', issue: 'A1', evidence: 'e7' }]),
-      mk([{ level: '严重', issue: 'S3', evidence: 'e3' }]),
+      mk([{ level: 'critical', issue: 'S1', evidence: 'e1' }, { level: 'major', issue: 'M1', evidence: 'e5' }]),
+      mk([{ level: 'critical', issue: 'S2', evidence: 'e2' }, { level: 'minor', issue: 'A1', evidence: 'e7' }]),
+      mk([{ level: 'critical', issue: 'S3', evidence: 'e3' }]),
     ],
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'S1', evidence: 'e1' }], refuted: ['S2'], reasoning: 'S2 是误报' })],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'S1', evidence: 'e1' }], refuted: ['S2'], reasoning: 'S2 是误报' })],
     merger: [null],
   })
   // flat=[S1,M1,S2,A1,S3] top=[S1,M1,S2,S3] mentioned={S1,S2}
   // candidates = [S1] + flat 未提及 [M1,A1,S3] = 4 条，全量保留
   assert.strictEqual(result.issues.length, 4, '候选问题全量保留（未静默归零）')
   assert.ok(result.issues.some((x) => x.issue === 'S3'), '未提及的严重项 S3 保留')
-  assert.ok(result.report.includes('汇总代理未返回结果'), '报告应标注汇总代理未返回结果')
-  assert.ok(result.report.includes('候选问题全量保留'), '报告应标注候选问题全量保留')
+  assert.ok(result.report.includes('the merger returned no result'), '报告应标注汇总代理未返回结果')
+  assert.ok(result.report.includes('all candidate problems kept'), '报告应标注候选问题全量保留')
 })
 
 test('③ review·审查代理 null：passed=false + 交付结论未确认', async () => {
@@ -353,39 +353,39 @@ test('③ review·审查代理 null：passed=false + 交付结论未确认', asy
   })
   assert.deepEqual(plain(result.issues), [])
   assert.strictEqual(result.passed, false, 'passed 不得为 true')
-  assert.ok(result.report.includes('3 个审查代理未返回结果'), '报告应标注 3 个审查代理未返回结果')
-  assert.ok(result.report.includes('交付结论未确认'), '结论应标注交付结论未确认')
-  assert.ok(!result.report.includes('（没发现问题）'), '不得宣称「（没发现问题）」')
-  assert.ok(!result.report.includes('可以交付'), '不得宣称「可以交付」')
+  assert.ok(result.report.includes('3 reviewer(s) returned no result'), '报告应标注 3 个审查代理未返回结果')
+  assert.ok(result.report.includes('the delivery verdict is unconfirmed'), '结论应标注交付结论未确认')
+  assert.ok(!result.report.includes('(No problems found.)'), '不得宣称「（没发现问题）」')
+  assert.ok(!result.report.includes('ready to deliver'), '不得宣称「可以交付」')
 })
 
 test('③ review·汇总代理 null：审查结果全量保留 + passed=false', async () => {
   const { result } = await runScript(SCRIPTS.review, { target: 'T' }, {
     reviewer: [
-      mk([{ level: '严重', issue: 'R1', evidence: 'e1' }, { level: '建议', issue: 'R2', evidence: 'e2' }]),
-      mk([{ level: '一般', issue: 'R3', evidence: 'e3' }]),
+      mk([{ level: 'critical', issue: 'R1', evidence: 'e1' }, { level: 'minor', issue: 'R2', evidence: 'e2' }]),
+      mk([{ level: 'major', issue: 'R3', evidence: 'e3' }]),
       mk([]),
     ],
     merger: [null],
   })
   assert.strictEqual(result.issues.length, 3, '审查结果全量保留（未静默归零）')
   assert.strictEqual(result.passed, false, 'merger null 时 passed 不得为 true')
-  assert.ok(result.report.includes('汇总代理未返回结果'), '报告应标注汇总代理未返回结果')
-  assert.ok(result.report.includes('审查结果全量保留'), '报告应标注审查结果全量保留')
+  assert.ok(result.report.includes('the merger returned no result'), '报告应标注汇总代理未返回结果')
+  assert.ok(result.report.includes('all review results kept'), '报告应标注审查结果全量保留')
 })
 
 test('③ fix·实现代理 null：与检查代理 null 同守卫——本轮未验证，不假收敛', async () => {
-  const { result, prompts } = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: '严重', issue: 'X1' }] }, {
+  const { result, prompts } = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: 'critical', issue: 'X1' }] }, {
     worker: [null, 'impl 2'],
     checker: [mk([]), mk([])],
   })
   assert.strictEqual(result.rounds, 2, 'worker null 的轮次不进入收敛分支，消耗轮次重查')
-  const round1CheckerPrompt = promptsOf(prompts, '检查·')[0] ?? ''
-  assert.ok(round1CheckerPrompt.includes('（没有返回结果）'), '检查门提示词必须标注实现代理未返回结果')
-  assert.ok(result.report.includes('第1轮：实现代理未返回结果，未验证'), '第1轮应标「实现代理未返回结果，未验证」')
-  assert.ok(result.report.includes('第2轮：通过'), '第2轮重查通过')
-  assert.strictEqual((result.report.match(/第\d+轮：通过/g) ?? []).length, 1, '不得在失败轮次出现假「通过」')
-  assert.ok(!result.report.includes('（无输出）'), '失败的实现不得被当作「通过」计入完成情况')
+  const round1CheckerPrompt = promptsOf(prompts, 'Check · ')[0] ?? ''
+  assert.ok(round1CheckerPrompt.includes('(no result returned)'), '检查门提示词必须标注实现代理未返回结果')
+  assert.ok(result.report.includes('Round 1: an implementer returned no result — unverified'), '第1轮应标「实现代理未返回结果，未验证」')
+  assert.ok(result.report.includes('Round 2: passed'), '第2轮重查通过')
+  assert.strictEqual((result.report.match(/Round \d+: passed/g) ?? []).length, 1, '不得在失败轮次出现假「通过」')
+  assert.ok(!result.report.includes('(no output)'), '失败的实现不得被当作「通过」计入完成情况')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -398,26 +398,26 @@ test('④ passed 三态', async (t) => {
       merger: [mk([])],
     })
     assert.strictEqual(result.passed, true)
-    assert.ok(result.report.includes('（没发现问题）'), '确认无问题才宣称「（没发现问题）」')
-    assert.ok(result.report.includes('可以交付'), '确认无问题才宣称「可以交付」')
+    assert.ok(result.report.includes('(No problems found.)'), '确认无问题才宣称「（没发现问题）」')
+    assert.ok(result.report.includes('ready to deliver'), '确认无问题才宣称「可以交付」')
   })
 
   await t.test('只有建议级 → passed=true', async () => {
     const { result } = await runScript(SCRIPTS.review, { target: 'T' }, {
-      reviewer: [mk([{ level: '建议', issue: 'A' }]), mk([]), mk([])],
-      merger: [mk([{ level: '建议', issue: 'A' }])],
+      reviewer: [mk([{ level: 'minor', issue: 'A' }]), mk([]), mk([])],
+      merger: [mk([{ level: 'minor', issue: 'A' }])],
     })
     assert.strictEqual(result.passed, true, '建议级不阻塞交付')
   })
 
   await t.test('有一般/严重 → passed=false', async () => {
     const { result } = await runScript(SCRIPTS.review, { target: 'T' }, {
-      reviewer: [mk([{ level: '一般', issue: 'R1' }]), mk([]), mk([])],
-      merger: [mk([{ level: '一般', issue: 'R1' }])],
+      reviewer: [mk([{ level: 'major', issue: 'R1' }]), mk([]), mk([])],
+      merger: [mk([{ level: 'major', issue: 'R1' }])],
     })
     assert.strictEqual(result.passed, false)
-    assert.ok(result.report.includes('严重/一般问题：1 个'), '结论应如实统计')
-    assert.ok(result.report.includes('建议先修复再交付'), '结论应建议先修复再交付')
+    assert.ok(result.report.includes('critical/major problems: 1'), '结论应如实统计')
+    assert.ok(result.report.includes('fix these before delivering'), '结论应建议先修复再交付')
   })
 
   await t.test('有代理未返回结果 → passed=false（未确认）', async () => {
@@ -426,8 +426,8 @@ test('④ passed 三态', async (t) => {
       merger: [mk([])],
     })
     assert.strictEqual(result.passed, false, '有代理未返回结果时 passed 不得为 true')
-    assert.ok(result.report.includes('1 个审查代理未返回结果'), '报告应标注 1 个审查代理未返回结果')
-    assert.ok(result.report.includes('交付结论未确认'), '结论应标注交付结论未确认')
+    assert.ok(result.report.includes('1 reviewer(s) returned no result'), '报告应标注 1 个审查代理未返回结果')
+    assert.ok(result.report.includes('the delivery verdict is unconfirmed'), '结论应标注交付结论未确认')
   })
 })
 
@@ -435,54 +435,54 @@ test('④ passed 三态', async (t) => {
 // ⑤ fix 假收敛防护：检查代理 null 不得被当作「通过」
 // ════════════════════════════════════════════════════════════════════════════
 test('⑤ fix·检查代理 null×3：未验证标记、无假通过、轮次耗尽如实未收敛', async () => {
-  const { result } = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: '严重', issue: 'X1' }] }, {
+  const { result } = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: 'critical', issue: 'X1' }] }, {
     worker: ['fix attempt 1', 'fix attempt 2', 'fix attempt 3'],
     checker: [null, null, null],
   })
   assert.strictEqual(result.rounds, 3)
-  const unverified = result.report.match(/第\d+轮：检查代理未返回结果，未验证/g) ?? []
+  const unverified = result.report.match(/Round \d+: the checker returned no result — unverified/g) ?? []
   assert.strictEqual(unverified.length, 3, '三轮都应标「未验证」')
-  assert.strictEqual((result.report.match(/第\d+轮：通过/g) ?? []).length, 0, '不得出现任何「通过」（假收敛）')
-  assert.ok(result.report.includes('未收敛'), '轮次耗尽应如实呈现未收敛')
-  const conclusion = result.report.slice(result.report.indexOf('## 结论'))
+  assert.strictEqual((result.report.match(/Round \d+: passed/g) ?? []).length, 0, '不得出现任何「通过」（假收敛）')
+  assert.ok(result.report.includes('Not converged'), '轮次耗尽应如实呈现未收敛')
+  const conclusion = result.report.slice(result.report.indexOf('## Conclusion'))
   assert.ok(conclusion.includes('X1'), '未收敛明细应列出剩余问题')
 })
 
 test('⑤ fix·检查 null 后重查通过：未验证轮次如实记录，不吞轮次', async () => {
-  const { result } = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: '严重', issue: 'X1' }] }, {
+  const { result } = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: 'critical', issue: 'X1' }] }, {
     worker: ['impl 1', 'impl 2'],
     checker: [null, mk([])],
   })
   assert.strictEqual(result.rounds, 2, '未验证的轮次不进入收敛分支，消耗轮次重查')
-  assert.ok(result.report.includes('第1轮：检查代理未返回结果，未验证'), '第1轮应标未验证')
-  assert.ok(result.report.includes('第2轮：通过'), '第2轮重查通过')
-  assert.ok(!result.report.includes('未收敛'), '最终收敛')
+  assert.ok(result.report.includes('Round 1: the checker returned no result — unverified'), '第1轮应标未验证')
+  assert.ok(result.report.includes('Round 2: passed'), '第2轮重查通过')
+  assert.ok(!result.report.includes('Not converged'), '最终收敛')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
 // ⑥ 4 问题全部重修：不得 slice 丢弃超出 3 个的问题
 // ════════════════════════════════════════════════════════════════════════════
 test('⑥ 4 个问题全部进入下一轮重修', async () => {
-  const P = (i) => ({ level: '一般', issue: 'P' + i })
+  const P = (i) => ({ level: 'major', issue: 'P' + i })
   const issues4 = [P(1), P(2), P(3), P(4)]
   const { result } = await runScript(SCRIPTS.fix, { task: 'T', issues: issues4 }, {
     worker: ['impl P1', 'impl P2', 'impl P3', 'impl P4', 're-impl P1', 're-impl P2', 're-impl P3', 're-impl P4'],
     checker: [mk([P(1), P(2), P(3), P(4)]), mk([])],
   })
   assert.strictEqual(result.rounds, 2)
-  assert.ok(result.report.includes('第1轮：4 个问题'), '检查记录应标第1轮 4 个问题')
-  assert.ok(result.report.includes('第2轮：通过'), '第2轮收敛')
+  assert.ok(result.report.includes('Round 1: 4 problem(s)'), '检查记录应标第1轮 4 个问题')
+  assert.ok(result.report.includes('Round 2: passed'), '第2轮收敛')
   assert.ok(result.report.includes('re-impl P4'), '第 4 个问题必须被重修（原缺陷：超出 3 个被静默丢弃）')
   const doneTitles = result.report.match(/^### .*$/gm) ?? []
   assert.strictEqual(doneTitles.length, 8, '完成情况应有 8 个步骤（4 原始 + 4 重修）')
-  assert.ok(!result.report.includes('未收敛'), '最终收敛')
+  assert.ok(!result.report.includes('Not converged'), '最终收敛')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
 // ⑦ 未收敛明细：轮次耗尽时如实列出剩余问题
 // ════════════════════════════════════════════════════════════════════════════
 test('⑦ 轮次耗尽：未收敛段如实列出全部剩余问题', async () => {
-  const P = (i) => ({ level: '严重', issue: '问题P' + i, evidence: '证据' + i })
+  const P = (i) => ({ level: 'critical', issue: '问题P' + i, evidence: '证据' + i })
   const issues4 = [P(1), P(2), P(3), P(4)]
   const { result } = await runScript(SCRIPTS.fix, { task: 'T', issues: issues4 }, {
     worker: [
@@ -493,13 +493,13 @@ test('⑦ 轮次耗尽：未收敛段如实列出全部剩余问题', async () =
     checker: [mk([P(1), P(2), P(3), P(4)]), mk([P(1), P(2), P(3), P(4)]), mk([P(1), P(2), P(3), P(4)])],
   })
   assert.strictEqual(result.rounds, 3)
-  assert.ok(result.report.includes('未收敛'), '应呈现未收敛')
-  const conclusion = result.report.slice(result.report.indexOf('## 结论'))
-  assert.ok(conclusion.includes('超出 3 轮上限'), '应标注超出轮次上限')
+  assert.ok(result.report.includes('Not converged'), '应呈现未收敛')
+  const conclusion = result.report.slice(result.report.indexOf('## Conclusion'))
+  assert.ok(conclusion.includes('exceeded the 3-round limit'), '应标注超出轮次上限')
   for (const p of issues4) {
     assert.ok(conclusion.includes(p.issue), `未收敛明细应列出 ${p.issue}`)
   }
-  assert.ok(conclusion.includes('把剩余问题重新喂给 fix 继续修复。'), '应给出下一步指引')
+  assert.ok(conclusion.includes('Feed the remaining problems back into fix to continue.'), '应给出下一步指引')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -511,49 +511,49 @@ test('⑪ fix·第2轮 worker/checker 附带原始任务、验收标准与第1�
   const { result, prompts } = await runScript(SCRIPTS.fix, {
     task: '原始任务T',
     acceptance: '原始验收标准A',
-    issues: [{ level: '严重', issue: 'X1', evidence: 'ev1' }],
+    issues: [{ level: 'critical', issue: 'X1', evidence: 'ev1' }],
   }, {
     worker: ['第1轮实现输出：' + LONG, '第2轮实现输出：修复了C1'],
-    checker: [mk([{ level: '严重', issue: 'C1', evidence: 'e1' }]), mk([])],
+    checker: [mk([{ level: 'critical', issue: 'C1', evidence: 'e1' }]), mk([])],
   })
   assert.strictEqual(result.rounds, 2, '第1轮发现问题，第2轮收敛')
 
-  const [w1, w2] = promptsOf(prompts, '实现')
-  const [c1, c2] = promptsOf(prompts, '检查·')
-  assert.ok(!w1.includes('原始任务'), '第1轮 worker 不带跨轮上下文（首轮问题即原始问题）')
-  assert.ok(!c1.includes('原始任务'), '第1轮 checker 不带跨轮上下文')
+  const [w1, w2] = promptsOf(prompts, 'Implement ')
+  const [c1, c2] = promptsOf(prompts, 'Check · ')
+  assert.ok(!w1.includes('Original task'), '第1轮 worker 不带跨轮上下文（首轮问题即原始问题）')
+  assert.ok(!c1.includes('Original task'), '第1轮 checker 不带跨轮上下文')
 
   for (const p of [w2, c2]) {
-    assert.ok(p.includes('原始任务：原始任务T'), '第2轮应附原始任务')
-    assert.ok(p.includes('原始验收标准：原始验收标准A'), '第2轮应附原始验收标准')
-    assert.ok(p.includes('上一轮产出（被检查对象，摘录）'), '第2轮应标注上一轮产出为被检查对象')
-    assert.ok(p.includes('第1轮产出摘录：'), '第2轮应含第1轮产出摘录')
-    assert.ok(p.includes('【任务】修复：X1'), '摘录应含原始步骤标题')
+    assert.ok(p.includes('Original task: 原始任务T'), '第2轮应附原始任务')
+    assert.ok(p.includes('Original acceptance criteria: 原始验收标准A'), '第2轮应附原始验收标准')
+    assert.ok(p.includes('Previous round output (the object being checked, excerpt)'), '第2轮应标注上一轮产出为被检查对象')
+    assert.ok(p.includes('Round 1 output (excerpt):'), '第2轮应含第1轮产出摘录')
+    assert.ok(p.includes('[Task] Fix: X1'), '摘录应含原始步骤标题')
     assert.ok(p.includes('第1轮实现输出：'), '摘录应含第1轮实现输出')
     assert.ok(p.includes('y'.repeat(1000)), '摘录限长内应完整保留（slice 含【任务】前缀，正文保留约1180字符）')
     assert.ok(!p.includes(LONG), '产出摘录必须限长（slice(0,1200)），不得整段塞入')
   }
-  assert.ok(w2.includes('问题：C1'), '第2轮 worker 仍以检查员问题为修复任务')
+  assert.ok(w2.includes('Problem: C1'), '第2轮 worker 仍以检查员问题为修复任务')
 })
 
 test('⑪ fix·第3轮摘录累积前两轮产出，检查员也能看到第1轮产物', async () => {
   const { result, prompts } = await runScript(SCRIPTS.fix, {
     task: '原始任务T',
     acceptance: '原始验收标准A',
-    issues: [{ level: '严重', issue: 'X1' }],
+    issues: [{ level: 'critical', issue: 'X1' }],
   }, {
     worker: ['w1', 'w2', 'w3'],
-    checker: [mk([{ level: '一般', issue: 'C1' }]), mk([{ level: '一般', issue: 'C2' }]), mk([])],
+    checker: [mk([{ level: 'major', issue: 'C1' }]), mk([{ level: 'major', issue: 'C2' }]), mk([])],
   })
   assert.strictEqual(result.rounds, 3)
-  const [w3] = promptsOf(prompts, '实现').slice(2)
-  const [c3] = promptsOf(prompts, '检查·').slice(2)
+  const [w3] = promptsOf(prompts, 'Implement ').slice(2)
+  const [c3] = promptsOf(prompts, 'Check · ').slice(2)
   for (const p of [w3, c3]) {
-    assert.ok(p.includes('第1轮产出摘录：'), '第3轮应含第1轮产出摘录')
-    assert.ok(p.includes('第2轮产出摘录：'), '第3轮应含第2轮产出摘录')
-    assert.ok(p.includes('原始任务：原始任务T'), '第3轮仍附原始任务')
+    assert.ok(p.includes('Round 1 output (excerpt):'), '第3轮应含第1轮产出摘录')
+    assert.ok(p.includes('Round 2 output (excerpt):'), '第3轮应含第2轮产出摘录')
+    assert.ok(p.includes('Original task: 原始任务T'), '第3轮仍附原始任务')
     assert.ok(p.includes('w1') && p.includes('w2'), '前两轮实现产物都在上下文中')
-    assert.ok(p.includes('【任务】修复：X1'), '原始步骤标题仍可追溯')
+    assert.ok(p.includes('[Task] Fix: X1'), '原始步骤标题仍可追溯')
   }
 })
 
@@ -582,7 +582,7 @@ function evaluateModuleInVm() {
   src = src.replace("import z from 'schemastery'", '')
   src = src.replace("import { defineTool } from '@deepseek-ai/dsh-tools'", '')
   src = src.replaceAll(/\bexport\s+/g, '')
-  src += '\n;globalThis.__inspectExports = { name, inject, Config, apply, CHECKUP_SCRIPT, FIX_SCRIPT, REVIEW_SCRIPT }\n'
+  src += '\n;globalThis.__inspectExports = { name, inject, Config, apply, splitList, CHECKUP_SCRIPT, FIX_SCRIPT, REVIEW_SCRIPT }\n'
   const defs = []
   // schemastery 链式 mock：Config 只在模块加载时构造，行为不被测试使用。
   // 自引用代理：z.natural() 的返回值也必须是同一代理（.min 等链式调用才能命中 trap）。
@@ -927,9 +927,9 @@ test('⑧ runWorkflow 透传 issues/rounds/passed', async () => {
   const { mod } = await loadPlugin()
   const { ctx, defs, requests } = stubContext((name) => ({
     report: 'mock report',
-    ...(name === 'inspect-checkup' ? { issues: [{ level: '一般', issue: 'C' }] } : {}),
+    ...(name === 'inspect-checkup' ? { issues: [{ level: 'major', issue: 'C' }] } : {}),
     ...(name === 'inspect-fix' ? { rounds: 2 } : {}),
-    ...(name === 'inspect-review' ? { issues: [{ level: '严重', issue: 'R' }], passed: true } : {}),
+    ...(name === 'inspect-review' ? { issues: [{ level: 'critical', issue: 'R' }], passed: true } : {}),
   }))
   mod.apply(ctx, {})
   const byName = Object.fromEntries(defs.map((d) => [d.name, d]))
@@ -939,9 +939,9 @@ test('⑧ runWorkflow 透传 issues/rounds/passed', async () => {
 
   const checkup = await byName.checkup.execute({ target: 'T' }, exec)
   assert.deepEqual(Object.keys(checkup).sort(), ['issues', 'ok', 'report'], 'checkup 透传 issues，无 rounds/passed')
-  assert.deepEqual(checkup.issues, [{ level: '一般', issue: 'C' }])
+  assert.deepEqual(checkup.issues, [{ level: 'major', issue: 'C' }])
 
-  const fix = await byName.fix.execute({ task: 'T', issues: '[{"level":"一般","issue":"X"}]' }, exec)
+  const fix = await byName.fix.execute({ task: 'T', issues: '[{"level":"major","issue":"X"}]' }, exec)
   assert.deepEqual(Object.keys(fix).sort(), ['ok', 'report', 'rounds'], 'fix 透传 rounds，无 issues/passed')
   assert.strictEqual(fix.rounds, 2)
 
@@ -956,7 +956,7 @@ test('⑧ runWorkflow 透传 issues/rounds/passed', async () => {
   assert.strictEqual(fixReq.meta.name, 'inspect-fix')
   assert.strictEqual(fixReq.parent, parent, 'parent 透传给引擎')
   assert.strictEqual(fixReq.signal, signal, 'signal 透传给引擎')
-  assert.deepEqual(plain(fixReq.args.issues), [{ level: '一般', issue: 'X' }], 'issues 以解析后的数组透传')
+  assert.deepEqual(plain(fixReq.args.issues), [{ level: 'major', issue: 'X' }], 'issues 以解析后的数组透传')
   assert.ok(!('subagentProvider' in fixReq), '未配置时不传 subagentProvider')
 
   // 配置语义：maxTotalAgents 为 null/undefined 时请求省略该键（引擎用默认上限），
@@ -983,28 +983,28 @@ test('⑨ 参数校验抛错（非数组/条目非对象/缺必填字段）', as
   const started = () => requests.length
 
   // fix.issues
-  await assert.rejects(byName.fix.execute({ task: 'T', issues: '{"a":1}' }, exec), /必须是 JSON 数组/, '非数组 JSON 抛错')
-  await assert.rejects(byName.fix.execute({ task: 'T', issues: 'not json' }, exec), /必须是 JSON 数组/, '解析失败抛错')
-  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[1,2]' }, exec), /每个条目必须是对象/, '条目非对象抛错')
-  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[null]' }, exec), /每个条目必须是对象/, '条目 null 抛错')
-  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[[1]]' }, exec), /每个条目必须是对象/, '条目是数组抛错')
-  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[{"level":"一般"}]' }, exec), /必须有字符串 issue/, '缺 issue 抛错')
-  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[{"issue":"X"}]' }, exec), /必须有字符串 level/, '缺 level 抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '{"a":1}' }, exec), /must be a JSON array/, '非数组 JSON 抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: 'not json' }, exec), /must be a JSON array/, '解析失败抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[1,2]' }, exec), /every entry must be an object/, '条目非对象抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[null]' }, exec), /every entry must be an object/, '条目 null 抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[[1]]' }, exec), /every entry must be an object/, '条目是数组抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[{"level":"major"}]' }, exec), /needs a string issue/, '缺 issue 抛错')
+  await assert.rejects(byName.fix.execute({ task: 'T', issues: '[{"issue":"X"}]' }, exec), /needs a string level/, '缺 level 抛错')
   assert.strictEqual(started(), 0, '抛错时不进入 workflows.start')
 
-  const fixOk = await byName.fix.execute({ task: 'T', issues: '[{"level":"一般","issue":"X"}]' }, exec)
+  const fixOk = await byName.fix.execute({ task: 'T', issues: '[{"level":"major","issue":"X"}]' }, exec)
   assert.strictEqual(fixOk.ok, true)
-  assert.deepEqual(plain(requests[0].args.issues), [{ level: '一般', issue: 'X' }], '合法 issues 以解析后的数组透传')
+  assert.deepEqual(plain(requests[0].args.issues), [{ level: 'major', issue: 'X' }], '合法 issues 以解析后的数组透传')
 
   await byName.fix.execute({ task: 'T', issues: '' }, exec)
   assert.ok(!('issues' in requests[1].args), '空串按未提供处理（不传 issues 键）')
 
   // review.fixed_issues
-  await assert.rejects(byName.review.execute({ target: 'T', fixed_issues: '{"a":1}' }, exec), /必须是 JSON 数组/, '非数组 JSON 抛错')
-  await assert.rejects(byName.review.execute({ target: 'T', fixed_issues: '[1]' }, exec), /每个条目必须是对象/, '条目非对象抛错')
-  await assert.rejects(byName.review.execute({ target: 'T', fixed_issues: '[null]' }, exec), /每个条目必须是对象/, '条目 null 抛错')
-  await byName.review.execute({ target: 'T', fixed_issues: '[{"level":"一般","issue":"Y"}]' }, exec)
-  assert.deepEqual(plain(requests[2].args.fixed_issues), [{ level: '一般', issue: 'Y' }], '合法 fixed_issues 透传')
+  await assert.rejects(byName.review.execute({ target: 'T', fixed_issues: '{"a":1}' }, exec), /must be a JSON array/, '非数组 JSON 抛错')
+  await assert.rejects(byName.review.execute({ target: 'T', fixed_issues: '[1]' }, exec), /every entry must be an object/, '条目非对象抛错')
+  await assert.rejects(byName.review.execute({ target: 'T', fixed_issues: '[null]' }, exec), /every entry must be an object/, '条目 null 抛错')
+  await byName.review.execute({ target: 'T', fixed_issues: '[{"level":"major","issue":"Y"}]' }, exec)
+  assert.deepEqual(plain(requests[2].args.fixed_issues), [{ level: 'major', issue: 'Y' }], '合法 fixed_issues 透传')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1023,11 +1023,11 @@ test('⑩ 输出 schema 编译通过（引擎受支持子集 + 值校验）', as
     assert.doesNotThrow(() => assertSupportedJsonSchema(def.parameters), `${name} parameters 应编译为受支持的对象 schema`)
   }
 
-  const checkupOut = { ok: true, report: '# r', issues: [{ level: '严重', issue: 'a', evidence: 'e' }] }
+  const checkupOut = { ok: true, report: '# r', issues: [{ level: 'critical', issue: 'a', evidence: 'e' }] }
   assert.deepEqual(validateJsonSchemaValue(byName.checkup.output.schema, checkupOut), [], '合法 checkup 输出通过')
   assert.deepEqual(validateJsonSchemaValue(byName.checkup.output.schema, { ok: true, report: '# r', issues: [] }), [], '空 issues 通过')
   assert.ok(validateJsonSchemaValue(byName.checkup.output.schema, { ok: true, report: 'x', issues: [{ level: '错误', issue: 'a' }] }).length > 0, '非法 level 被拒')
-  assert.ok(validateJsonSchemaValue(byName.checkup.output.schema, { ok: true, report: 'x', issues: [{ level: '严重', issue: 'a', bogus: 1 }] }).length > 0, '条目多余键被拒')
+  assert.ok(validateJsonSchemaValue(byName.checkup.output.schema, { ok: true, report: 'x', issues: [{ level: 'critical', issue: 'a', bogus: 1 }] }).length > 0, '条目多余键被拒')
   assert.ok(validateJsonSchemaValue(byName.checkup.output.schema, { ok: true, report: 'x', extra: 1 }).length > 0, '顶层多余键被拒')
   assert.ok(validateJsonSchemaValue(byName.checkup.output.schema, { ok: true }).length > 0, '缺 report 被拒')
   assert.ok(validateJsonSchemaValue(byName.checkup.output.schema, { ok: true, report: 'x', issues: 'not-array' }).length > 0, '非数组 issues 被拒')
@@ -1045,14 +1045,14 @@ test('⑩ 输出 schema 编译通过（引擎受支持子集 + 值校验）', as
 test('模型接线：args.models 透传到各角色 agent opts.model', async () => {
   const { prompts } = await runScript(SCRIPTS.fix, {
     task: 'T',
-    issues: [{ level: '严重', issue: 'X1' }],
+    issues: [{ level: 'critical', issue: 'X1' }],
     models: { checker: 'cm', worker: 'wm' },
   }, {
     worker: ['impl'],
     checker: [mk([])],
   })
-  const workerCall = prompts.find((p) => p.label.startsWith('实现'))
-  const checkerCall = prompts.find((p) => p.label.startsWith('检查·'))
+  const workerCall = prompts.find((p) => p.label.startsWith('Implement '))
+  const checkerCall = prompts.find((p) => p.label.startsWith('Check · '))
   assert.strictEqual(workerCall.opts.model, 'wm', 'worker 调用应带 models.worker')
   assert.strictEqual(checkerCall.opts.model, 'cm', 'checker 调用应带 models.checker')
 
@@ -1060,18 +1060,18 @@ test('模型接线：args.models 透传到各角色 agent opts.model', async () 
     target: 'T',
     models: { redteam: 'rm', merger: 'mm', checker: 'cm2' },
   }, {
-    checker: [mk([{ level: '严重', issue: 'W' }]), mk([]), mk([])],
-    redteam: [() => ({ survived: [{ level: '严重', issue: 'W' }], refuted: [], reasoning: '' })],
+    checker: [mk([{ level: 'critical', issue: 'W' }]), mk([]), mk([])],
+    redteam: [() => ({ survived: [{ level: 'critical', issue: 'W' }], refuted: [], reasoning: '' })],
     merger: [echoMerger],
   })
-  assert.strictEqual(checkup.prompts.find((p) => p.label === '红队').opts.model, 'rm', '红队调用应带 models.redteam')
-  assert.strictEqual(checkup.prompts.find((p) => p.label === '汇总').opts.model, 'mm', '汇总调用应带 models.merger')
+  assert.strictEqual(checkup.prompts.find((p) => p.label === 'Red team').opts.model, 'rm', '红队调用应带 models.redteam')
+  assert.strictEqual(checkup.prompts.find((p) => p.label === 'Merge').opts.model, 'mm', '汇总调用应带 models.merger')
 
-  const noModels = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: '一般', issue: 'X2' }] }, {
+  const noModels = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: 'major', issue: 'X2' }] }, {
     worker: ['impl'],
     checker: [mk([])],
   })
-  assert.ok(!('model' in noModels.prompts.find((p) => p.label.startsWith('检查·')).opts), '未配置 models 时不带 model 键')
+  assert.ok(!('model' in noModels.prompts.find((p) => p.label.startsWith('Check · ')).opts), '未配置 models 时不带 model 键')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1097,7 +1097,7 @@ test('⑫ workflows 缺失：inject 不含 workflows；apply 照常、execute �
   // execute：服务缺失（从未存在）→ 清晰错误而非 TypeError。
   const exec = { agent: { id: 'parent' }, signal: new EventTarget() }
   await assert.rejects(registered.find((d) => d.name === 'checkup').execute({ target: 'T' }, exec),
-    /no "workflows" service.*workflow engine/s, '服务缺失时 execute 报清晰错误（不是 TypeError）')
+    /no "workflowEngine" service.*workflow engine/s, '服务缺失时 execute 报清晰错误（不是 TypeError）')
 
   // execute：apply 成功后服务中途消失（provider 停止）→ 同样清晰错误。
   const { ctx, defs } = stubContext(() => ({ report: 'r' }))
@@ -1105,5 +1105,81 @@ test('⑫ workflows 缺失：inject 不含 workflows；apply 照常、execute �
   delete ctx.workflows
   const exec2 = { agent: { id: 'parent' }, signal: new EventTarget() }
   await assert.rejects(defs.find((d) => d.name === 'checkup').execute({ target: 'T' }, exec2),
-    /no "workflows" service.*workflow engine/s, '服务消失后 execute 报清晰错误（不是 TypeError）')
+    /no "workflowEngine" service.*workflow engine/s, '服务消失后 execute 报清晰错误（不是 TypeError）')
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑬ 引擎服务名：dsh ≥0.1.6 的官方引擎注册为 workflowEngine；旧名 workflows 作后备。
+// ════════════════════════════════════════════════════════════════════════════
+test('⑬ 引擎服务名：优先 workflowEngine，workflows 作后备', async () => {
+  const { mod } = await loadPlugin()
+  for (const key of ['workflowEngine', 'workflows']) {
+    const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
+    if (key === 'workflowEngine') { ctx.workflowEngine = ctx.workflows; delete ctx.workflows }
+    mod.apply(ctx, {})
+    const exec = { agent: { id: 'parent' }, signal: new EventTarget() }
+    await defs.find((d) => d.name === 'checkup').execute({ target: 'T' }, exec)
+    assert.equal(requests.length, 1, `${key} 服务被调用`)
+  }
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑭ 递归守卫：工作流子代理（同一 preset，同样能看到 checkup/fix/review）调用
+//    这三个工具时直接拒绝，防止无界嵌套；子代理结束后同一会话恢复可用。
+// ════════════════════════════════════════════════════════════════════════════
+test('⑭ 递归守卫：工作流子代理内调用被拒绝，结束后恢复', async () => {
+  const { mod } = await loadPlugin()
+  const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
+  const listeners = {}
+  ctx.on = (event, fn) => { (listeners[event] ??= []).push(fn) }
+  mod.apply(ctx, {})
+  const emit = (event, ...args) => (listeners[event] ?? []).forEach((fn) => fn(...args))
+  const info = { id: 'run-x', meta: { name: 'm', description: 'd' } }
+  emit('workflow/agent-start', info, { seq: 1, label: 'checker', childId: 'child-1' })
+  for (const name of ['checkup', 'fix', 'review']) {
+    const args = name === 'fix' ? { task: 'T' } : { target: 'T' }
+    await assert.rejects(defs.find((d) => d.name === name).execute(args, { agent: { id: 'child-1' }, signal: new EventTarget() }),
+      /cannot be started from inside a workflow sub-agent/, `${name} 在子代理内被拒绝`)
+  }
+  assert.equal(requests.length, 0, '被拒绝时不启动任何工作流')
+  // 顶层会话不受影响
+  await defs.find((d) => d.name === 'checkup').execute({ target: 'T' }, { agent: { id: 'top' }, signal: new EventTarget() })
+  assert.equal(requests.length, 1)
+  // 子代理结束 → 解除
+  emit('workflow/agent-end', info, { seq: 1, label: 'checker', childId: 'child-1' }, { outcome: 'completed' })
+  await defs.find((d) => d.name === 'checkup').execute({ target: 'T' }, { agent: { id: 'child-1' }, signal: new EventTarget() })
+  assert.equal(requests.length, 2)
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑮ angles/dimensions 拆分：分层分隔符（换行 > 分号 > 逗号），括号内不拆分。
+// ════════════════════════════════════════════════════════════════════════════
+test('⑮ splitList：分层分隔符与括号保护', async () => {
+  const { mod } = await loadPlugin()
+  const split = (s) => Array.from(mod.splitList(s))
+  assert.deepEqual(split('实现质量，边界与错误处理，安全与资源'), ['实现质量', '边界与错误处理', '安全与资源'])
+  assert.deepEqual(split('a, b, c'), ['a', 'b', 'c'])
+  assert.deepEqual(split('accounting (cash, fees); data (panel, dates).'), ['accounting (cash, fees)', 'data (panel, dates)'])
+  assert.deepEqual(split('accounting (cash; fees), data integrity, lookahead'), ['accounting (cash; fees)', 'data integrity', 'lookahead'])
+  assert.deepEqual(split('Engine; cash; fees\nData; panel (hfq; splits); dates\nTests; coverage'),
+    ['Engine; cash; fees', 'Data; panel (hfq; splits); dates', 'Tests; coverage'])
+  assert.deepEqual(split('a (b, c, d'), ['a (b', 'c', 'd'])
+  assert.deepEqual(split(''), [])
+  assert.deepEqual(split(undefined), [])
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑯ Legacy levels: issue lists from the pre-fork Chinese version (严重/一般/建议)
+//    are accepted by fix/review and mapped to critical/major/minor.
+// ════════════════════════════════════════════════════════════════════════════
+test('⑯ legacy Chinese levels map to critical/major/minor', async () => {
+  const { mod } = await loadPlugin()
+  const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
+  mod.apply(ctx, {})
+  const exec = { agent: { id: 'parent' }, signal: new EventTarget() }
+  await defs.find((d) => d.name === 'fix').execute({
+    task: 'T',
+    issues: JSON.stringify([{ level: '严重', issue: 'A' }, { level: '一般', issue: 'B' }, { level: '建议', issue: 'C' }, { level: 'major', issue: 'D' }]),
+  }, exec)
+  assert.deepEqual(Array.from(requests[0].args.issues, (x) => x.level), ['critical', 'major', 'minor', 'major'])
 })
