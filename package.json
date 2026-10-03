@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-inspect",
-  "description": "A simple find → fix → review loop: checkup (adversarial checking + red-team verification), fix (root cause → fix → verify) and review (adversarial review), built on the official dsh workflow engine. Fork: English prompts and reports, works on dsh 0.1.6–0.2.x, mounted on the web app through the \"Standard + inspect\" agent preset.",
-  "version": "0.2.0-fork.1",
+  "description": "A simple find → fix → review loop: checkup (adversarial checking + red-team verification), fix (root cause → fix → verify) and review (adversarial review), built on the official dsh workflow engine. Fork: English prompts and reports, works on dsh 0.1.6–0.2.x, its tools available in every mode.",
+  "version": "0.2.0-fork.2",
   "private": true,
   "type": "module",
   "main": "./lib/types/index.js",
@@ -44,7 +44,10 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./presets/standard-inspect.patch.yml"
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/standard-inspect.patch.yml"
+      ]
     }
   },
   "dependencies": {

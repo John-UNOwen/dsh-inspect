@@ -1,13 +1,22 @@
-# Host-level mount — NOT loaded by default. The bundle patch is
-# presets/standard-inspect.patch.yml, which mounts dsh-inspect inside an agent
-# preset next to that preset's own workflow engine (the dsh web app way).
+# dsh-inspect bundle patch (one of the files in package.json `dsh.bundle.patch`).
 #
-# Use this only for a profile without agent presets (e.g. a TUI/headless
-# profile whose agent is composed host-wide): copy the rows below into that
-# profile's cordis.patch.yml. The host composition must then provide the
-# workflow engine (`workflow-ptc`, service `workflowEngine`) — on the web
-# profile it is disabled at host level, and tools mounted here would ALSO
-# appear in every preset next to the preset-mounted copy, so don't do both.
+# Mounts checkup / fix / review host-wide: host tool registrations go into the
+# tool registry's global layer, so the tools appear in every agent preset
+# (Standard, PTC, Minimal, Creator, …) and in sessions that already exist —
+# no mode switch needed.
+#
+# The tools run on the host workflow engine. The dsh web app disables the host
+# `workflow-ptc` row (each preset carries its own, isolated engine that a
+# host-mounted plugin cannot see), so it is re-enabled here. Its config is
+# replaced wholesale, so the shipped `provider: spawn` is restated.
+# `maxConcurrentAgents: 1` runs checkup/fix/review sub-agents one at a time;
+# 0 = engine default (CPU cores - 2, max 16).
+
+- id: workflow-ptc
+  disabled: false
+  config:
+    provider: spawn
+    maxConcurrentAgents: 1
 
 - insert:
     - id: dsh-inspect
