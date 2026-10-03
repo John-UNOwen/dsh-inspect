@@ -77,4 +77,22 @@ export declare function apply(ctx: Context, config?: Config): void;
  * `,`/`，`/`、`. Separators inside brackets never split.
  */
 export declare function splitList(raw: string | undefined): string[];
+/** Longest report returned inline; longer reports are spilled to a file (see compactReport). */
+export declare const INLINE_REPORT_LIMIT = 6000;
+/** Save a long report through the spill store and return a compact result listing every issue. */
+export declare function compactReport(ctx: Context, out: {
+    ok: boolean;
+    report: string;
+    issues?: {
+        level: 'critical' | 'major' | 'minor';
+        issue: string;
+        evidence?: string;
+    }[];
+    rounds?: number;
+    passed?: boolean;
+}, workflowName: string, parent: {
+    readonly id: unknown;
+}, exec: {
+    readonly callId?: unknown;
+}): Promise<typeof out>;
 //# sourceMappingURL=index.d.ts.map

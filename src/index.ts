@@ -738,7 +738,7 @@ export function apply(ctx: Context, config: Config = {}) {
       const target = String(args.target).trim()
       if (target.length === 0) throw new Error('checkup: target must not be empty')
       const angles = splitList(args.angles)
-      return runWorkflow(ctx, common, {
+      return runWorkflow(ctx, common, exec, {
         script: CHECKUP_SCRIPT,
         meta: {
           name: 'inspect-checkup',
@@ -795,7 +795,7 @@ export function apply(ctx: Context, config: Config = {}) {
       const task = String(args.task).trim()
       if (task.length === 0) throw new Error('fix: task must not be empty')
       const issues = parseIssueList(args.issues, 'fix: issues')
-      return runWorkflow(ctx, common, {
+      return runWorkflow(ctx, common, exec, {
         script: FIX_SCRIPT,
         meta: {
           name: 'inspect-fix',
@@ -859,7 +859,7 @@ export function apply(ctx: Context, config: Config = {}) {
       if (target.length === 0) throw new Error('review: target must not be empty')
       const dims = splitList(args.dimensions)
       const fixedIssues = parseIssueList(args.fixed_issues, 'review: fixed_issues')
-      return runWorkflow(ctx, common, {
+      return runWorkflow(ctx, common, exec, {
         script: REVIEW_SCRIPT,
         meta: {
           name: 'inspect-review',
@@ -883,6 +883,7 @@ export function apply(ctx: Context, config: Config = {}) {
 async function runWorkflow(
   ctx: Context,
   common: { subagentProvider?: string; maxTotalAgents?: number },
+  exec: { readonly callId?: unknown },
   request: WorkflowRunRequest,
   parent: Agent,
   signal: AbortSignal,
@@ -919,12 +920,97 @@ async function runWorkflow(
     if (record.issues !== undefined) out.issues = record.issues as Issue[]
     if (record.rounds !== undefined) out.rounds = record.rounds as number
     if (record.passed !== undefined) out.passed = record.passed as boolean
-    return out
+    return await compactReport(ctx, out, request.meta.name, parent, exec)
   } finally {
     signal.removeEventListener('abort', onAbort)
     // Always reach run quiescence — never leak a live script or children.
     await run.dispose()
   }
+}
+
+/**
+ * Longest report returned inline. dsh's tool-result pruner (default
+ * `thresholdChars` 8192) cuts the middle out of longer results once the
+ * conversation nears compaction — for a long checkup that is exactly the
+ * issue list. Reports above this size are saved in full through the spill
+ * store and replaced by a compact result: summary, every issue on one line,
+ * and the path to the full report.
+ */
+export const INLINE_REPORT_LIMIT = 6000
+
+/** Longest issue text kept on its one-line entry in a compact result. */
+const COMPACT_ISSUE_CHARS = 240
+
+/** Minimal view of the `spillStore` service (@deepseek-ai/dsh-spill). */
+interface SpillStoreLike {
+  saveText(input: {
+    owner: { sessionId: unknown }
+    source: { kind: 'tool'; toolName: string; callId?: unknown; label: string }
+    suggestedName: string
+    content: string
+  }): Promise<{ locator: string; bytes: number; retrievalHint?: string }>
+}
+
+/**
+ * Keep a long report readable after pruning: save the full text through the
+ * spill store and return a compact report that stays under the pruner limit.
+ * Without a spill store (or if saving fails) the full report is returned as
+ * before — never lose content to make the result shorter.
+ */
+export async function compactReport(
+  ctx: Context,
+  out: ToolResult,
+  workflowName: string,
+  parent: Agent,
+  exec: { readonly callId?: unknown },
+): Promise<ToolResult> {
+  if (out.report.length <= INLINE_REPORT_LIMIT) return out
+  const store = (ctx.get as (name: string) => unknown)('spillStore') as SpillStoreLike | undefined
+  if (!store || typeof store.saveText !== 'function') return out
+  const toolName = workflowName.replace(/^inspect-/, '')
+  let ref: { locator: string; bytes: number; retrievalHint?: string }
+  try {
+    ref = await store.saveText({
+      owner: { sessionId: parent.id },
+      source: { kind: 'tool', toolName, ...(exec.callId !== undefined ? { callId: exec.callId } : {}), label: 'full report' },
+      suggestedName: `${toolName}-report.md`,
+      content: out.report,
+    })
+  } catch {
+    return out
+  }
+
+  const lines = out.report.split('\n')
+  const title = lines[0] ?? `# ${toolName} report`
+  const header: string[] = [title, '']
+  for (const line of lines.slice(1)) {
+    if (line.startsWith('## ')) break
+    if (line.trim()) header.push(line)
+  }
+  const footer = `\nFull report (evidence, red-team notes, run log): ${ref.locator}`
+    + `\n${ref.retrievalHint ?? 'Use read with offset/limit, or grep this path.'}`
+  const body: string[] = []
+  const issues = out.issues ?? []
+  if (issues.length > 0) {
+    const counts = ['critical', 'major', 'minor'].map((lv) => `${lv}: ${issues.filter((x) => x.level === lv).length}`).join(' · ')
+    body.push('', `## Problems (${issues.length}) — ${counts}`, '(One line each; evidence is in the full report.)')
+    let used = header.join('\n').length + body.join('\n').length + footer.length + 200
+    for (const [i, x] of issues.entries()) {
+      const text = x.issue.length > COMPACT_ISSUE_CHARS ? x.issue.slice(0, COMPACT_ISSUE_CHARS - 1) + '…' : x.issue
+      const line = `${i + 1}. [${x.level}] ${text}`
+      if (used + line.length + 1 > INLINE_REPORT_LIMIT) {
+        body.push(`… ${issues.length - i} more — see the full report.`)
+        break
+      }
+      body.push(line)
+      used += line.length + 1
+    }
+  } else {
+    // fix reports carry no issue list: keep as much of the start as fits.
+    const room = INLINE_REPORT_LIMIT - header.join('\n').length - footer.length - 100
+    body.push('', out.report.slice(title.length, Math.max(0, room)).trim(), '…')
+  }
+  return { ...out, report: [...header, ...body].join('\n') + '\n' + footer }
 }
 
 /**

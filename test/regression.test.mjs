@@ -582,7 +582,7 @@ function evaluateModuleInVm() {
   src = src.replace("import z from 'schemastery'", '')
   src = src.replace("import { defineTool } from '@deepseek-ai/dsh-tools'", '')
   src = src.replaceAll(/\bexport\s+/g, '')
-  src += '\n;globalThis.__inspectExports = { name, inject, Config, apply, splitList, CHECKUP_SCRIPT, FIX_SCRIPT, REVIEW_SCRIPT }\n'
+  src += '\n;globalThis.__inspectExports = { name, inject, Config, apply, splitList, compactReport, INLINE_REPORT_LIMIT, CHECKUP_SCRIPT, FIX_SCRIPT, REVIEW_SCRIPT }\n'
   const defs = []
   // schemastery 链式 mock：Config 只在模块加载时构造，行为不被测试使用。
   // 自引用代理：z.natural() 的返回值也必须是同一代理（.min 等链式调用才能命中 trap）。
@@ -1182,4 +1182,46 @@ test('⑯ legacy Chinese levels map to critical/major/minor', async () => {
     issues: JSON.stringify([{ level: '严重', issue: 'A' }, { level: '一般', issue: 'B' }, { level: '建议', issue: 'C' }, { level: 'major', issue: 'D' }]),
   }, exec)
   assert.deepEqual(Array.from(requests[0].args.issues, (x) => x.level), ['critical', 'major', 'minor', 'major'])
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑰ Long reports: saved in full through the spill store; the inline result stays
+//    under the limit (so dsh's tool-result pruner never cuts the issue list) and
+//    still names every issue. No store / failed save → full report unchanged.
+// ════════════════════════════════════════════════════════════════════════════
+test('⑰ long report → spilled in full, compact result lists every issue', async () => {
+  const { mod } = await loadPlugin()
+  const issues = Array.from({ length: 20 }, (_, i) => ({
+    level: ['critical', 'major', 'minor'][i % 3],
+    issue: `Issue ${i + 1}: ` + 'cash accounting drifts when a halted symbol resumes; '.repeat(3),
+    evidence: 'engine.py:120-180 ' + 'x'.repeat(400),
+  }))
+  const report = ['# Checkup report', '', 'Target: T', 'Angles: a, b', '', `## Problems found (${issues.length})`,
+    ...issues.map((x, i) => `${i + 1}. [${x.level}] ${x.issue} (evidence: ${x.evidence})`), '', '## Red team', 'notes'].join('\n')
+  assert.ok(report.length > mod.INLINE_REPORT_LIMIT)
+  const saved = []
+  const ctx = { get: (n) => n === 'spillStore' ? { saveText: async (input) => { saved.push(input); return { locator: '/spill/s1/checkup-report.md', bytes: input.content.length, retrievalHint: 'Use read with offset/limit.' } } } : undefined }
+  const out = await mod.compactReport(ctx, { ok: true, report, issues }, 'inspect-checkup', { id: 'sess-1' }, { callId: 'c1' })
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0].content, report, 'the full report is saved verbatim')
+  assert.equal(saved[0].owner.sessionId, 'sess-1')
+  assert.ok(out.report.length <= mod.INLINE_REPORT_LIMIT, `compact report ${out.report.length} > limit`)
+  for (let i = 1; i <= 20; i++) assert.ok(out.report.includes(`${i}. [`), `issue ${i} listed`)
+  assert.ok(out.report.includes('/spill/s1/checkup-report.md'), 'points to the full report')
+  assert.ok(!out.report.includes('xxxxxxxxxx'), 'evidence stays in the file')
+  assert.equal(out.issues.length, 20, 'structured issues untouched')
+
+  // short report: unchanged, nothing saved
+  const short = await mod.compactReport(ctx, { ok: true, report: 'short' }, 'inspect-checkup', { id: 's' }, {})
+  assert.equal(short.report, 'short'); assert.equal(saved.length, 1)
+  // no spill store: full report kept
+  const none = await mod.compactReport({ get: () => undefined }, { ok: true, report, issues }, 'inspect-checkup', { id: 's' }, {})
+  assert.equal(none.report, report)
+  // save fails: full report kept
+  const failing = { get: () => ({ saveText: async () => { throw new Error('disk full') } }) }
+  const kept = await mod.compactReport(failing, { ok: true, report, issues }, 'inspect-checkup', { id: 's' }, {})
+  assert.equal(kept.report, report)
+  // fix-style report without issues: head + locator, under the limit
+  const fixOut = await mod.compactReport(ctx, { ok: true, report: '# Delivery report\n\nTask: T\n\n## Work done\n' + 'y'.repeat(9000), rounds: 2 }, 'inspect-fix', { id: 's' }, {})
+  assert.ok(fixOut.report.length <= mod.INLINE_REPORT_LIMIT && fixOut.report.includes('/spill/s1/checkup-report.md'))
 })
