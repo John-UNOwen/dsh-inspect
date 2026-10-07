@@ -77,6 +77,19 @@ export declare function apply(ctx: Context, config?: Config): void;
  * `,`/`，`/`、`. Separators inside brackets never split.
  */
 export declare function splitList(raw: string | undefined): string[];
+/** One slash command: its prompt for empty input and for a free-form request. */
+export interface CommandSpec {
+    name: string;
+    description: string;
+    hint: string;
+    ack: string;
+    empty: string;
+    withInput: (input: string) => string;
+}
+/** The slash commands: /checkup, /fix, /inspect-review. */
+export declare const COMMANDS: readonly CommandSpec[];
+/** Register the slash commands; a name already taken is skipped with a warning. */
+export declare function registerCommands(ctx: Context): void;
 /** Longest report returned inline; longer reports are spilled to a file (see compactReport). */
 export declare const INLINE_REPORT_LIMIT = 6000;
 /** Save a long report through the spill store and return a compact result listing every issue. */

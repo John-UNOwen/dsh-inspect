@@ -581,13 +581,15 @@ function evaluateModuleInVm() {
   src = stripTypeScriptTypes(src) // throws on non-erasable syntax — keeps the source portable
   src = src.replace("import z from 'schemastery'", '')
   src = src.replace("import { defineTool } from '@deepseek-ai/dsh-tools'", '')
+  src = src.replace("import { createUserMessage } from '@deepseek-ai/dsh-llm'", '')
   src = src.replaceAll(/\bexport\s+/g, '')
-  src += '\n;globalThis.__inspectExports = { name, inject, Config, apply, splitList, compactReport, INLINE_REPORT_LIMIT, CHECKUP_SCRIPT, FIX_SCRIPT, REVIEW_SCRIPT }\n'
+  src += '\n;globalThis.__inspectExports = { name, inject, Config, apply, splitList, compactReport, INLINE_REPORT_LIMIT, COMMANDS, registerCommands, CHECKUP_SCRIPT, FIX_SCRIPT, REVIEW_SCRIPT }\n'
   const defs = []
   // schemastery 链式 mock：Config 只在模块加载时构造，行为不被测试使用。
   // 自引用代理：z.natural() 的返回值也必须是同一代理（.min 等链式调用才能命中 trap）。
   const zChain = new Proxy(() => undefined, { get: () => zChain, apply: () => zChain })
   const context = vm.createContext({
+    createUserMessage: (input) => ({ ...input, id: 'msg-1', role: 'user' }),
     z: new Proxy(zChain, { get: () => zChain, apply: () => zChain }),
     // 镜像真实 defineTool（dsh-tools schema.ts）：编译参数/输出 schema +
     // execute 包装层对参数做 schema 校验（缺必填/类型错 → 抛错，不进入执行体）。
@@ -1224,4 +1226,44 @@ test('⑰ long report → spilled in full, compact result lists every issue', as
   // fix-style report without issues: head + locator, under the limit
   const fixOut = await mod.compactReport(ctx, { ok: true, report: '# Delivery report\n\nTask: T\n\n## Work done\n' + 'y'.repeat(9000), rounds: 2 }, 'inspect-fix', { id: 's' }, {})
   assert.ok(fixOut.report.length <= mod.INLINE_REPORT_LIMIT && fixOut.report.includes('/spill/s1/checkup-report.md'))
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑱ Slash commands: /checkup, /fix, /inspect-review hand a follow-up message to
+//    the agent; a name already taken by another plugin is skipped without
+//    breaking the others; apply waits for `commands` through ctx.inject.
+// ════════════════════════════════════════════════════════════════════════════
+test('⑱ slash commands register, submit follow-ups, and tolerate a taken name', async () => {
+  const { mod } = await loadPlugin()
+  assert.deepEqual(Array.from(mod.COMMANDS, (c) => c.name), ['checkup', 'fix', 'inspect-review'])
+  const registered = []
+  const warnings = []
+  const ctx = {
+    logger: { warn: (m) => warnings.push(m) },
+    commands: { register: (def) => { if (def.name === 'fix') throw new Error('command "fix" already registered'); registered.push(def) } },
+  }
+  mod.registerCommands(ctx)
+  assert.deepEqual(registered.map((d) => d.name), ['checkup', 'inspect-review'])
+  assert.equal(warnings.length, 1); assert.match(warnings[0], /\/fix not registered/)
+
+  const sent = []
+  const agent = { followup: (m) => sent.push(m) }
+  const checkup = registered.find((d) => d.name === 'checkup')
+  const r1 = await checkup.handler({ agent, rawInput: '' })
+  assert.equal(r1.kind, 'success')
+  assert.match(sent[0].content[0].text, /call the `checkup` tool with the current working directory/)
+  assert.equal(sent[0].source.kind, 'dsh-inspect')
+  await checkup.handler({ agent, rawInput: '  src/engine.py\ncash accounting  ' })
+  assert.match(sent[1].content[0].text, /Request:\nsrc\/engine\.py\ncash accounting$/)
+  const review = registered.find((d) => d.name === 'inspect-review')
+  await review.handler({ agent, rawInput: '' })
+  assert.match(sent[2].content[0].text, /`review` tool on the current uncommitted changes/)
+
+  // apply: commands come through ctx.inject; no commands service → no throw
+  const { ctx: c2 } = stubContext(() => ({ report: 'r' }))
+  const injected = []
+  c2.inject = (deps, cb) => { injected.push(Array.from(deps)); cb({ commands: { register: (d) => injected.push(d.name) } }) }
+  mod.apply(c2, {})
+  assert.deepEqual(injected, [['commands'], 'checkup', 'fix', 'inspect-review'])
+  mod.registerCommands({})
 })
