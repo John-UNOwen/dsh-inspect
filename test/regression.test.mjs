@@ -1166,8 +1166,56 @@ test('⑮ splitList：分层分隔符与括号保护', async () => {
   assert.deepEqual(split('Engine; cash; fees\nData; panel (hfq; splits); dates\nTests; coverage'),
     ['Engine; cash; fees', 'Data; panel (hfq; splits); dates', 'Tests; coverage'])
   assert.deepEqual(split('a (b, c, d'), ['a (b', 'c', 'd'])
+  assert.deepEqual(split('a (b\nc; d'), ['a (b', 'c; d'])
+  assert.deepEqual(split('x [y, z] {p; q} 【m，n】'), ['x [y, z] {p; q} 【m，n】'])
+  assert.deepEqual(split('a、b、c'), ['a', 'b', 'c'])
+  assert.deepEqual(split('a；b'), ['a', 'b'])
   assert.deepEqual(split(''), [])
+  assert.deepEqual(split('  \n '), [])
   assert.deepEqual(split(undefined), [])
+  assert.deepEqual(split(null), [])
+})
+
+test('⑮b splitList：标点清理保留缩写与小数，去掉句末句号', async () => {
+  const { mod } = await loadPlugin()
+  const split = (s) => Array.from(mod.splitList(s))
+  assert.deepEqual(split('version 1.0, etc.'), ['version 1.0', 'etc.'])
+  assert.deepEqual(split('e.g. latency, throughput'), ['e.g. latency', 'throughput'])
+  assert.deepEqual(split('Node.js, Deno.'), ['Node.js', 'Deno'])
+  assert.deepEqual(split('a..'), ['a'])
+  assert.deepEqual(split('one line only.'), ['one line only'])
+  assert.deepEqual(split('a; b,'), ['a', 'b'], '尾随分隔符不产生空项，也不被当作逗号歧义')
+  assert.deepEqual(split('a\r\nb\r\n'), ['a', 'b'])
+})
+
+test('⑮c splitList：歧义与无效输入明确报错，不静默回退', async () => {
+  const { mod } = await loadPlugin()
+  // 同一行里 ";" 与 "," 都是分隔符：不猜意图，要求改写
+  assert.throws(() => mod.splitList('security, edge cases; performance'), /both separate items on one line/)
+  assert.throws(() => mod.splitList('security; edge cases, performance'), /both separate items on one line/)
+  // 换行分隔时，每行内部的 ";"/"," 属于该行细节，不报错
+  assert.deepEqual(Array.from(mod.splitList('security, edge cases\nperformance; latency')), ['security, edge cases', 'performance; latency'])
+  // 有文字但切完无项
+  assert.throws(() => mod.splitList(';'), /contains no items/)
+  assert.throws(() => mod.splitList(' , , '), /contains no items/)
+  // 非字符串（如 JSON 数组）不再静默变成默认角度
+  assert.throws(() => mod.splitList(['a', 'b']), /must be a string/)
+  assert.throws(() => mod.splitList(42), /must be a string/)
+  // 错误信息带上参数名
+  assert.throws(() => mod.splitList(';', 'checkup: angles'), /^Error: checkup: angles contains no items/)
+})
+
+test('⑮d checkup/review 拒绝歧义角度，且不启动工作流', async () => {
+  const { mod } = await loadPlugin()
+  const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
+  ctx.on = () => {}
+  mod.apply(ctx, {})
+  const exec = { agent: { id: 'top' }, signal: new EventTarget() }
+  await assert.rejects(defs.find((d) => d.name === 'checkup').execute({ target: 'T', angles: 'a, b; c' }, exec),
+    /checkup: angles: ";" and "," both separate/)
+  await assert.rejects(defs.find((d) => d.name === 'review').execute({ target: 'T', dimensions: 'x; y, z' }, exec),
+    /review: dimensions: ";" and "," both separate/)
+  assert.equal(requests.length, 0, '参数错误时不启动任何工作流')
 })
 
 // ════════════════════════════════════════════════════════════════════════════

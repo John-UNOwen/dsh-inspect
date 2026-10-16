@@ -33,6 +33,7 @@
  */
 import z from 'schemastery';
 import type { Context } from 'cordis';
+import type { Agent } from '@deepseek-ai/dsh-agent';
 export declare const name = "dsh-inspect";
 /**
  * Activate once the tool registry is available. The workflow engine is a hard
@@ -70,15 +71,25 @@ export interface Config {
  * positiveInt.
  */
 export declare const Config: z<Config>;
+/** Severity levels, strongest first: critical = breaks or unusable / major = should fix / minor = could be better. */
+declare const LEVELS: readonly ["critical", "major", "minor"];
+/** One graded issue as produced by the checkup/review pipelines. */
+type Issue = {
+    level: typeof LEVELS[number];
+    issue: string;
+    evidence?: string;
+};
+/** The tool result shape all three tools share (script-owned fields pass through). */
+type ToolResult = {
+    ok: boolean;
+    report: string;
+    issues?: Issue[];
+    rounds?: number;
+    passed?: boolean;
+};
 export declare function apply(ctx: Context, config?: Config): void;
-/**
- * Split a list argument into items. Separators are tiered and only the
- * strongest one present outside brackets is used: newline > `;`/`；` >
- * `,`/`，`/`、`. Separators inside brackets never split.
- */
-export declare function splitList(raw: string | undefined): string[];
 /** One slash command: its prompt for empty input and for a free-form request. */
-export interface CommandSpec {
+interface CommandSpec {
     name: string;
     description: string;
     hint: string;
@@ -86,26 +97,52 @@ export interface CommandSpec {
     empty: string;
     withInput: (input: string) => string;
 }
-/** The slash commands: /checkup, /fix, /inspect-review. */
+/**
+ * The slash commands. Each hands the request to the current agent as a
+ * follow-up user message that asks it to call the matching tool — the agent
+ * fills in target/angles itself, so the commands take free-form input.
+ * `/review` belongs to other review plugins (e.g. @michengai/dsh-code-review),
+ * so dsh-inspect's review command is `/inspect-review`.
+ */
 export declare const COMMANDS: readonly CommandSpec[];
-/** Register the slash commands; a name already taken is skipped with a warning. */
+/**
+ * Register the slash commands. A name already taken (another plugin's
+ * command) is skipped with a warning — it must never stop the tools loading.
+ */
 export declare function registerCommands(ctx: Context): void;
-/** Longest report returned inline; longer reports are spilled to a file (see compactReport). */
+/**
+ * Longest report returned inline. dsh's tool-result pruner (default
+ * `thresholdChars` 8192) cuts the middle out of longer results once the
+ * conversation nears compaction — for a long checkup that is exactly the
+ * issue list. Reports above this size are saved in full through the spill
+ * store and replaced by a compact result: summary, every issue on one line,
+ * and the path to the full report.
+ */
 export declare const INLINE_REPORT_LIMIT = 6000;
-/** Save a long report through the spill store and return a compact result listing every issue. */
-export declare function compactReport(ctx: Context, out: {
-    ok: boolean;
-    report: string;
-    issues?: {
-        level: 'critical' | 'major' | 'minor';
-        issue: string;
-        evidence?: string;
-    }[];
-    rounds?: number;
-    passed?: boolean;
-}, workflowName: string, parent: {
-    readonly id: unknown;
-}, exec: {
+/**
+ * Keep a long report readable after pruning: save the full text through the
+ * spill store and return a compact report that stays under the pruner limit.
+ * Without a spill store (or if saving fails) the full report is returned as
+ * before — never lose content to make the result shorter.
+ */
+export declare function compactReport(ctx: Context, out: ToolResult, workflowName: string, parent: Agent, exec: {
     readonly callId?: unknown;
-}): Promise<typeof out>;
-//# sourceMappingURL=index.d.ts.map
+}): Promise<ToolResult>;
+/**
+ * Split a list argument (`angles`, `dimensions`) into items.
+ *
+ * Separators are tiered, and only the strongest one present at the top level
+ * is used: newline > `;`/`；` > `,`/`，`/`、`. Separators inside (), （）, [],
+ * 【】 or {} never split. So "a, b, c" gives 3 items, "x (p, q); y" gives 2, and
+ * one-item-per-line text keeps each line's own `;`/`,` detail intact.
+ *
+ * Throws instead of guessing when the input is ambiguous or unusable:
+ * - a non-string value (for example a JSON array),
+ * - `;` and `,` both separating items on one line (which one was meant?),
+ * - input that has text but no items once the separators are removed.
+ * Blank or missing input is "not provided" and returns [].
+ *
+ * @param label names the parameter in error messages.
+ */
+export declare function splitList(raw: unknown, label?: string): string[];
+export {};

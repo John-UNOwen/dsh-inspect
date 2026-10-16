@@ -718,7 +718,7 @@ export function apply(ctx: Context, config: Config = {}) {
       + 'Use for: fault-finding, audits, health checks, investigating suspicious behavior, verifying whether a problem is real.',
     parameters: {
       target: { type: 'string', required: true, description: 'What to check (a path or a description; the checker agents look at it themselves).' },
-      angles: { type: 'string', description: 'Optional: the angles to check from — one per line, or separated by semicolons or commas; separators inside brackets do not split. One or more, no fixed limit (2-6 recommended; the engine\'s maxTotalAgents is the backstop). Default: implementation quality / edge cases and error handling / security and resources. One checker agent runs per angle.' },
+      angles: { type: 'string', description: 'Optional: the angles to check from — one per line, or separated by semicolons or commas (not both on one line); separators inside brackets do not split. One or more, no fixed limit (2-6 recommended; the engine\'s maxTotalAgents is the backstop). Default: implementation quality / edge cases and error handling / security and resources. One checker agent runs per angle.' },
       context: { type: 'string', description: 'Optional: background (scope, known limitations, what to compare against).' },
     },
     output: {
@@ -742,7 +742,7 @@ export function apply(ctx: Context, config: Config = {}) {
       assertNotWorkflowChild(workflowChildren, parent, 'checkup')
       const target = String(args.target).trim()
       if (target.length === 0) throw new Error('checkup: target must not be empty')
-      const angles = splitList(args.angles)
+      const angles = splitList(args.angles, 'checkup: angles')
       return runWorkflow(ctx, common, exec, {
         script: CHECKUP_SCRIPT,
         meta: {
@@ -836,7 +836,7 @@ export function apply(ctx: Context, config: Config = {}) {
       + 'Use for: quality gates after a task, review before commit/delivery, design reviews.',
     parameters: {
       target: { type: 'string', required: true, description: 'The deliverable to review (a path or a description).' },
-      dimensions: { type: 'string', description: 'Optional: the angles to review from — one per line, or separated by semicolons or commas; separators inside brackets do not split. One or more, no fixed limit (2-6 recommended; the engine\'s maxTotalAgents is the backstop). Default: implementation quality / edge cases and error handling / security and resources. One reviewer agent runs per angle.' },
+      dimensions: { type: 'string', description: 'Optional: the angles to review from — one per line, or separated by semicolons or commas (not both on one line); separators inside brackets do not split. One or more, no fixed limit (2-6 recommended; the engine\'s maxTotalAgents is the backstop). Default: implementation quality / edge cases and error handling / security and resources. One reviewer agent runs per angle.' },
       context: { type: 'string', description: 'Optional: background (requirements, acceptance criteria).' },
       fixed_issues: { type: 'string', description: 'Optional: fixes to verify (JSON array text: [{level, issue, evidence}]); the reviewers confirm one by one whether each problem is really gone.' },
     },
@@ -862,7 +862,7 @@ export function apply(ctx: Context, config: Config = {}) {
       assertNotWorkflowChild(workflowChildren, parent, 'review')
       const target = String(args.target).trim()
       if (target.length === 0) throw new Error('review: target must not be empty')
-      const dims = splitList(args.dimensions)
+      const dims = splitList(args.dimensions, 'review: dimensions')
       const fixedIssues = parseIssueList(args.fixed_issues, 'review: fixed_issues')
       return runWorkflow(ctx, common, exec, {
         script: REVIEW_SCRIPT,
@@ -1104,22 +1104,21 @@ export async function compactReport(
   return { ...out, report: [...header, ...body].join('\n') + '\n' + footer }
 }
 
+/** Words whose trailing period is part of the word, not the end of a sentence. */
+const ABBREVIATIONS = new Set(['etc', 'e.g', 'i.e', 'vs', 'cf', 'approx'])
+
 /**
- * Split a list argument into items. Separators are tiered and only the
- * strongest one present outside brackets is used: newline > `;`/`；` >
- * `,`/`，`/`、`. So "a, b, c" gives 3 items, "x (p, q); y" gives 2, and
- * one-item-per-line text keeps each line's own `;`/`,` detail intact.
- * Separators inside (), （）, [], 【】 or {} never split; with unbalanced
- * brackets the bracket rule is dropped for that tier.
+ * Split `text` on any character in `seps` that sits outside brackets.
+ * Returns undefined when no such separator exists. If the brackets never
+ * close, the bracket rule is dropped so the text still splits.
  */
-export function splitList(raw: string | undefined): string[] {
-  if (typeof raw !== 'string') return []
-  const topLevel = (seps: string, useBrackets: boolean): string[] | undefined => {
+function splitTopLevel(text: string, seps: string): string[] | undefined {
+  const scan = (useBrackets: boolean) => {
     const items: string[] = []
     let depth = 0
     let current = ''
     let found = false
-    for (const ch of raw) {
+    for (const ch of text) {
       if (useBrackets && '(（[【{'.includes(ch)) depth += 1
       else if (useBrackets && ')）]】}'.includes(ch)) depth = Math.max(0, depth - 1)
       if (depth === 0 && seps.includes(ch)) {
@@ -1131,18 +1130,65 @@ export function splitList(raw: string | undefined): string[] {
       }
     }
     items.push(current)
-    if (useBrackets && depth !== 0) return topLevel(seps, false)
-    return found ? items : undefined
+    return { items, depth, found }
   }
-  let parts: string[] = [raw]
-  for (const seps of ['\n', ';；', ',，、']) {
-    const split = topLevel(seps, true)
-    if (split !== undefined) {
-      parts = split
-      break
+  const bracketed = scan(true)
+  const result = bracketed.depth !== 0 ? scan(false) : bracketed
+  return result.found ? result.items : undefined
+}
+
+/** Trim one item: drop stray separator punctuation and a sentence-ending period. */
+function cleanListItem(raw: string): string {
+  const text = raw.trim().replace(/[;；,，、]+$/, '').trim()
+  const m = /^(.*?\S)[.。]+$/.exec(text)
+  if (m) {
+    const lastWord = m[1].split(/\s+/).pop()!.toLowerCase()
+    if (!ABBREVIATIONS.has(lastWord)) return m[1]
+  }
+  return text
+}
+
+/**
+ * Split a list argument (`angles`, `dimensions`) into items.
+ *
+ * Separators are tiered, and only the strongest one present at the top level
+ * is used: newline > `;`/`；` > `,`/`，`/`、`. Separators inside (), （）, [],
+ * 【】 or {} never split. So "a, b, c" gives 3 items, "x (p, q); y" gives 2, and
+ * one-item-per-line text keeps each line's own `;`/`,` detail intact.
+ *
+ * Throws instead of guessing when the input is ambiguous or unusable:
+ * - a non-string value (for example a JSON array),
+ * - `;` and `,` both separating items on one line (which one was meant?),
+ * - input that has text but no items once the separators are removed.
+ * Blank or missing input is "not provided" and returns [].
+ *
+ * @param label names the parameter in error messages.
+ */
+export function splitList(raw: unknown, label = 'list'): string[] {
+  if (raw === undefined || raw === null) return []
+  if (typeof raw !== 'string') {
+    throw new Error(`${label} must be a string: one item per line, or separated by ";" or ","`)
+  }
+  if (raw.trim().length === 0) return []
+  const finish = (parts: string[]): string[] => {
+    const items = parts.map(cleanListItem).filter((s) => s.length > 0)
+    if (items.length === 0) throw new Error(`${label} contains no items: "${raw.trim()}"`)
+    return items
+  }
+  const lines = splitTopLevel(raw, '\n')
+  if (lines) return finish(lines)
+  const semicolons = splitTopLevel(raw, ';；')
+  if (semicolons) {
+    for (const part of semicolons) {
+      const commaParts = (splitTopLevel(part, ',，、') ?? [part]).filter((s) => s.trim().length > 0)
+      if (commaParts.length > 1) {
+        throw new Error(`${label}: ";" and "," both separate items on one line ("${part.trim()}"). `
+          + 'Put one item per line, or use only one of ";" and ","; separators inside brackets are fine.')
+      }
     }
+    return finish(semicolons)
   }
-  return parts.map((s) => s.trim().replace(/[.。;；,，]$/, '').trim()).filter((s) => s.length > 0)
+  return finish(splitTopLevel(raw, ',，、') ?? [raw])
 }
 
 /**
