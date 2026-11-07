@@ -60,6 +60,8 @@ export interface Config {
     reviewerModel?: string;
     mergerModel?: string;
     redteamModel?: string;
+    /** Claims the red team attacks per checkup/review run; criticals are always attacked. */
+    redteamMaxClaims?: number;
 }
 /**
  * Plugin configuration, validated by the cordis loader against this
@@ -71,14 +73,21 @@ export interface Config {
  * positiveInt.
  */
 export declare const Config: z<Config>;
-/** Severity levels, strongest first: critical = breaks or unusable / major = should fix / minor = could be better. */
+/** Severity levels, strongest first. */
 declare const LEVELS: readonly ["critical", "major", "minor"];
+/** Red-team tags on a returned issue (minor issues are not attacked and carry none). */
+declare const VERDICT_TAGS: readonly ["confirmed", "downgraded", "unverified", "not attacked"];
 /** One graded issue as produced by the checkup/review pipelines. */
 type Issue = {
     level: typeof LEVELS[number];
     issue: string;
     evidence?: string;
+    reproduce?: string;
+    verdict?: typeof VERDICT_TAGS[number];
 };
+export declare const CHECKUP_SCRIPT: string;
+export declare const FIX_SCRIPT: string;
+export declare const REVIEW_SCRIPT: string;
 /** The tool result shape all three tools share (script-owned fields pass through). */
 type ToolResult = {
     ok: boolean;
@@ -86,6 +95,8 @@ type ToolResult = {
     issues?: Issue[];
     rounds?: number;
     passed?: boolean;
+    converged?: boolean;
+    remaining?: Issue[];
 };
 export declare function apply(ctx: Context, config?: Config): void;
 /** One slash command: its prompt for empty input and for a free-form request. */
