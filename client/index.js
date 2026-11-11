@@ -36,7 +36,8 @@ window.__ModuleLoader__.load({
       fixRoundsHint: 'Implement-and-check rounds before fix stops and returns what is left (1–20).',
       runsTitle: 'Runs',
       maxTotal: 'Sub-agents per run',
-      maxTotalHint: "Most sub-agents one checkup, fix or review run may start. Empty = the workflow engine's ceiling.",
+      maxTotalHint:
+        "Most sub-agents one checkup, fix or review run may start. Empty = the workflow engine's ceiling. Keep it at or below that ceiling (1000 unless workflow-ptc's maxTotalAgents is raised), or every run fails to start.",
       provider: 'Sub-agent provider',
       providerHint: 'Empty = the workflow engine default.',
       modelsTitle: 'Models',
@@ -82,7 +83,8 @@ window.__ModuleLoader__.load({
       fixRoundsHint: 'fix 停止并返回剩余问题前的“实现 + 检查”轮数（1–20）。',
       runsTitle: '运行',
       maxTotal: '每次运行的子代理数',
-      maxTotalHint: '一次 checkup、fix 或 review 最多启动的子代理数。留空 = 工作流引擎上限。',
+      maxTotalHint:
+        '一次 checkup、fix 或 review 最多启动的子代理数。留空 = 工作流引擎上限。不能超过该上限（默认 1000，除非调高 workflow-ptc 的 maxTotalAgents），否则每次运行都无法启动。',
       provider: '子代理 provider',
       providerHint: '留空 = 工作流引擎默认。',
       modelsTitle: '模型',

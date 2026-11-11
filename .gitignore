@@ -1,4 +1,4 @@
 node_modules/
 *.log
 .DS_Store
-lib/types/tsconfig.tsbuildinfo
+lib/tsconfig.tsbuildinfo

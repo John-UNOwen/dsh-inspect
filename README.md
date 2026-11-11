@@ -8,7 +8,7 @@ Fork of [omdsh-dev/dsh-inspect](https://github.com/omdsh-dev/dsh-inspect): the `
 - **Current workflow engine.** The official engine registers as `workflowEngine` (dsh ≥ 0.1.6); the old `workflows` name is kept as a fallback.
 - **Works in every mode.** The tools are registered host-wide, so they appear in every agent preset (Standard, PTC, Minimal, Creator, …) and in sessions that already exist — no mode switch. On the dsh web app each preset has its own isolated workflow engine that host plugins cannot reach, so the bundle re-enables the host `workflow-ptc` engine for dsh-inspect, with `maxConcurrentAgents: 1` (sub-agents run one at a time; edit `cordis.patch.yml` or override `workflow-ptc` in your profile to change it).
 - **Optional "Standard + inspect" preset.** Earlier fork versions mounted the tools inside this preset; it remains as a copy of Standard whose own engine runs one sub-agent at a time, so sessions created with it keep working.
-- **Long reports survive pruning.** dsh's tool-result pruner cuts the middle out of tool results over ~8,192 characters once a conversation nears compaction — for a long checkup, exactly the issue list. Reports over 6,000 characters are now saved in full through dsh's spill storage, and the tool returns a compact result instead: the summary, every issue on one line, and the path to the full report (the agent can `read` or `grep` it for evidence and red-team notes). Without spill storage the full report is returned as before.
+- **Long reports survive pruning.** dsh's tool-result pruner cuts the middle out of tool results over ~8,192 characters once a conversation nears compaction — for a long checkup, exactly the issue list. Reports over 6,000 characters are now saved in full through dsh's spill storage, and the tool returns a compact result instead: the summary, one line per issue (issue text is shortened so that as many as possible fit; a very long list ends with a count of the rest), and the path to the full report (the agent can `read` or `grep` it for evidence and red-team notes). Without spill storage the full report is returned as before.
 - **Slash commands.** Type `/` in the dsh web app: `/checkup` (find problems — empty checks the whole project), `/fix` (empty fixes the latest checkup/review findings) and `/inspect-review` (empty reviews the uncommitted changes). Each takes free-form input and hands the request to the agent, which calls the tool. `/review` is left to other review plugins such as @michengai/dsh-code-review; if another plugin already owns one of these names, that command is skipped and the rest still load.
 - **No recursion.** Workflow sub-agents see the same tools as their parent; `checkup` / `fix` / `review` refuse to start from inside a workflow sub-agent, so a sub-agent cannot set off nested runs without bound.
 - **Angle lists keep their details.** `angles` / `dimensions` split on the strongest separator present — one per line, else `;`, else `,` — and never inside brackets, so `accounting (cash, fees); data (panel, dates)` is two angles. Input that is ambiguous is rejected with a message instead of guessed: `;` and `,` both separating items on one line (`security, edge cases; performance`), text with no items left after splitting, or a non-string value. Put one angle per line to keep any `;` or `,` inside an angle.
@@ -35,7 +35,7 @@ Every setting can be changed in dsh and applies to the next `checkup` / `fix` / 
 | `redteamMinLevel` | `major` | Which claims the red team attacks: `critical` (critical only), `major` (critical and major) or `minor` (every claim). Claims below it are kept without a verdict. |
 | `redteamMaxClaims` | `6` | Most claims attacked per run; `0` = no limit. Criticals are always attacked, even over the limit; the rest go in order of level. Each attacked claim is one more sub-agent. |
 | `fixMaxRounds` | `3` | Implement-and-check rounds before `fix` stops and returns what is left (1–20). |
-| `maxTotalAgents` | engine ceiling (1000) | Most sub-agents one run may start. |
+| `maxTotalAgents` | engine ceiling (1000) | Most sub-agents one run may start. It cannot exceed the engine's own ceiling (`workflow-ptc` `maxTotalAgents`, default 1000): a higher value makes every run fail with "exceeds the engine ceiling". Raise both together if you need more. |
 | `subagentProvider` | engine default | Sub-agent provider for every run. |
 | `checkerModel`, `reviewerModel`, `mergerModel`, `redteamModel`, `plannerModel`, `workerModel` | inherit | A model per role. A `redteamModel` different from `checkerModel` gives a more independent attack. |
 
@@ -69,6 +69,10 @@ Then commit `presets/standard-inspect.patch.yml` and reinstall the plugin. The s
 ```powershell
 node --test
 ```
+
+## Build
+
+dsh loads the compiled `lib/types/index.js`, not `src/index.ts`. After changing `src/index.ts`, run `pnpm run build` (it typechecks against a sibling `deepseek-harness` checkout, see `tsconfig.json`) and commit `lib/` with the change. `node --test` fails when `lib/` no longer matches `src/`.
 
 ---
 
@@ -109,7 +113,7 @@ checkup 的红队环节就是负反馈——问题声明必须经受住攻击，
 dsh-inspect/
 ├── package.json    # @dsh-external/dsh-inspect (MIT)（声明 dsh.bundle.patch）
 ├── cordis.patch.yml  # bundle 补丁：按包名插入插件行
-├── src/index.ts    # cordis 插件：注册 checkup/fix/review 三个工具（官方 workflow 引擎；原生 TS，零构建）
+├── src/index.ts    # cordis 插件：注册 checkup/fix/review 三个工具（官方 workflow 引擎；TS 源码，dsh 加载编译产物 lib/types）
 ├── tsconfig.json   # typecheck 配置（project references 解析到 sibling deepseek-harness 源码）
 ├── test/
 │   └── regression.test.mjs  # 回归测试：前两轮 10 项修复固化为可重跑用例（node:test）
@@ -119,15 +123,14 @@ dsh-inspect/
 ## 开发与检查
 
 ```bash
-pnpm install        # 仅 typescript/@types/node（typecheck 用）
+pnpm install        # typescript/@types/node（typecheck 用）+ 运行时依赖 @deepseek-ai/schemastery
 pnpm run typecheck  # tsc -b，类型从 sibling deepseek-harness checkout 解析
 cd plugins/dsh-inspect && node --test   # 回归测试
 ```
 
-源码即运行时：包入口直接指向 `src/index.ts`，无构建步骤。profile 安装的副本位于
-node_modules 下，由 dsh 源码启动器的 tsx hook 加载（Node 原生类型剥离拒绝
-node_modules 内的文件）；源码 checkout 在 node_modules 外直跑时也可用 Node ≥22.18
-原生剥离。要求 erasable-only TS 语法（无 enum/命名空间等），测试的 vm 路径用
+包入口是编译产物 `lib/types/index.js`（随仓库提交），不是 `src/index.ts`：改动
+`src/index.ts` 后须运行 `pnpm run build` 并一并提交 `lib/`；`lib/` 与 `src/` 不一致时
+`node --test` 会失败。要求 erasable-only TS 语法（无 enum/命名空间等），测试的 vm 路径用
 `node:module` 的 `stripTypeScriptTypes` 剥离类型，会挡住不可移植写法。
 
 ## 测试（回归）

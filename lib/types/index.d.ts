@@ -22,12 +22,12 @@
  * in an elaborate vocabulary. Built on the official workflow engine
  * (ctx.workflowEngine) and the built-in tools (bash/fs/glob…).
  *
- * Native TypeScript source: the package entry points at this file and no build
- * step exists. In a dsh profile the package lives under node_modules, so it
- * loads through the dsh source launcher's whole-process tsx hook (Node's
- * native type stripping refuses files under node_modules); a checkout run
- * outside node_modules can also load via Node >=22.18 native stripping.
- * Syntax must stay erasable-only (no enums/namespaces/parameter properties).
+ * Build: the package entry is the compiled lib/types/index.js, committed with
+ * the source — dsh loads that, not this file. After changing this file run
+ * `pnpm run build` and commit lib/ too; the regression suite fails when lib/
+ * no longer matches src/. Syntax must stay erasable-only (no enums /
+ * namespaces / parameter properties): the tests strip types with
+ * node:module's stripTypeScriptTypes.
  *
  * @module @dsh-external/dsh-inspect
  */
@@ -162,8 +162,9 @@ export declare function registerCommands(ctx: Context): void;
  * `thresholdChars` 8192) cuts the middle out of longer results once the
  * conversation nears compaction — for a long checkup that is exactly the
  * issue list. Reports above this size are saved in full through the spill
- * store and replaced by a compact result: summary, every issue on one line,
- * and the path to the full report.
+ * store and replaced by a compact result: the summary, one line per issue
+ * (shortened so as many fit as possible; past that, a count), and the path
+ * to the full report.
  */
 export declare const INLINE_REPORT_LIMIT = 6000;
 /**

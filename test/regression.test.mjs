@@ -717,12 +717,12 @@ function loadPlugin() {
 }
 
 /** 在 vm 中求值模块源码：先剥离类型（原生类型剥离契约），再移除 import/export，注入 mock z 与 defineTool。 */
-function evaluateModuleInVm() {
-  let src = SRC
-  src = stripTypeScriptTypes(src) // throws on non-erasable syntax — keeps the source portable
-  src = src.replace("import z from '@deepseek-ai/schemastery'", '')
-  src = src.replace("import { defineTool } from '@deepseek-ai/dsh-tools'", '')
-  src = src.replace("import { createUserMessage } from '@deepseek-ai/dsh-llm'", '')
+// source: the TS source (types stripped first) or the compiled lib/types/index.js.
+function evaluateModuleInVm(source = SRC, { typescript = true } = {}) {
+  let src = source
+  if (typescript) src = stripTypeScriptTypes(src) // throws on non-erasable syntax — keeps the source portable
+  // Every import is replaced by an injected mock (z, defineTool, createUserMessage) or is type-only.
+  src = src.replaceAll(/^import [^\n]*$/gm, '')
   src = src.replaceAll(/\bexport\s+/g, '')
   src += '\n;globalThis.__inspectExports = { name, inject, Config, apply, splitList, compactReport, INLINE_REPORT_LIMIT, COMMANDS, registerCommands, CHECKUP_SCRIPT, FIX_SCRIPT, REVIEW_SCRIPT }\n'
   const defs = []
@@ -1461,7 +1461,7 @@ test('⑯ legacy Chinese levels map to critical/major/minor', async () => {
 //    under the limit (so dsh's tool-result pruner never cuts the issue list) and
 //    still names every issue. No store / failed save → full report unchanged.
 // ════════════════════════════════════════════════════════════════════════════
-test('⑰ long report → spilled in full, compact result lists every issue', async () => {
+test('⑰ long report → spilled in full, compact result lists the issues', async () => {
   const { mod } = await loadPlugin()
   const issues = Array.from({ length: 20 }, (_, i) => ({
     level: ['critical', 'major', 'minor'][i % 3],
@@ -1496,6 +1496,42 @@ test('⑰ long report → spilled in full, compact result lists every issue', as
   // fix-style report without issues: head + locator, under the limit
   const fixOut = await mod.compactReport(ctx, { ok: true, report: '# Delivery report\n\nTask: T\n\n## Work done\n' + 'y'.repeat(9000), rounds: 2 }, 'inspect-fix', { id: 's' }, {})
   assert.ok(fixOut.report.length <= mod.INLINE_REPORT_LIMIT && fixOut.report.includes('/spill/s1/checkup-report.md'))
+  assert.equal(fixOut.report.match(/^Task: T$/gm).length, 1, 'the header is not repeated in the body')
+  assert.ok(fixOut.report.includes('## Work done'), 'the body starts at the first section')
+})
+
+test('⑰b compact result: issues shrink to fit, stay on one line, header capped', async () => {
+  const { mod } = await loadPlugin()
+  const ctx = { get: () => ({ saveText: async () => ({ locator: '/spill/r.md', bytes: 1 }) }) }
+  const compact = (report, issues) => mod.compactReport(ctx, { ok: true, report, ...(issues ? { issues } : {}) }, 'inspect-checkup', { id: 's' }, {})
+  const big = '\n## Problems\n' + 'x'.repeat(7000)
+  const listed = (r) => (r.match(/^\d+\. \[/gm) || []).length
+
+  // 40 long issues (a large checkup): every one is listed, text shortened to fit.
+  const long40 = Array.from({ length: 40 }, (_, i) => ({ level: 'minor', issue: 'issue ' + i + ' ' + 'y'.repeat(300) }))
+  const r40 = await compact('# Checkup report\n\nTarget: T' + big, long40)
+  assert.equal(listed(r40.report), 40)
+  assert.ok(r40.report.length <= mod.INLINE_REPORT_LIMIT)
+  assert.ok(!r40.report.includes('more (problems'))
+
+  // 400 issues cannot all fit at a readable length: the rest is counted, and the result stays under the limit.
+  const many = Array.from({ length: 400 }, (_, i) => ({ level: 'major', issue: 'realistic issue text number ' + i + ' ' + 'z'.repeat(100) }))
+  const r400 = await compact('# Checkup report\n\nTarget: T' + big, many)
+  const n = listed(r400.report)
+  assert.ok(n > 20 && n < 400, 'listed ' + n)
+  assert.ok(r400.report.includes(`… ${400 - n} more (problems ${n + 1}–400)`))
+  assert.ok(r400.report.length <= mod.INLINE_REPORT_LIMIT)
+  assert.equal(r400.issues.length, 400, 'structured issues untouched')
+
+  // Line breaks inside an issue are flattened, so each entry is one line.
+  const nl = await compact('# Checkup report\n\nTarget: T' + big, [{ level: 'critical', issue: 'first line\nsecond line\n\n- bullet' }])
+  assert.ok(nl.report.includes('1. [critical] first line second line - bullet'))
+
+  // A huge caller-supplied target or angle list cannot blow the limit.
+  const huge = await compact('# Checkup report\n\nTarget: ' + 't'.repeat(10000) + '\nAngles: ' + 'angle, '.repeat(2000) + '\nContext: c\n' + big,
+    [{ level: 'major', issue: 'a' }])
+  assert.ok(huge.report.length <= mod.INLINE_REPORT_LIMIT, 'compact length ' + huge.report.length)
+  assert.ok(huge.report.includes('1. [major] a'), 'the issue list survives')
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1581,4 +1617,73 @@ test('㉒ settings form: a field for every Config key, drafts parsed like the sc
   const level = choiceField('redteamMinLevel', ['critical', 'major', 'minor'])
   assert.deepEqual(plain(level.parse('minor')), { kind: 'set', value: 'minor' })
   assert.equal(level.parse('all'), undefined)
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ㉓ Input hardening: inherited Object.prototype names are not levels; an
+//    implementer that finishes with no text counts as no result.
+// ════════════════════════════════════════════════════════════════════════════
+test('㉓ fix: a level named like an Object.prototype member stays a plain string', async () => {
+  const { mod } = await loadPlugin()
+  const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
+  mod.apply(ctx, {})
+  const fix = defs.find((d) => d.name === 'fix')
+  const exec = { agent: { id: 'p' }, signal: new EventTarget() }
+  for (const level of ['toString', 'constructor', '__proto__', 'hasOwnProperty', '严重']) {
+    await fix.execute({ task: 'T', issues: JSON.stringify([{ level, issue: 'x' }]) }, exec)
+    const got = requests.at(-1).args.issues[0].level
+    assert.equal(typeof got, 'string', level)
+    assert.doesNotThrow(() => structuredClone(requests.at(-1).args), "args survive the engine's structuredClone: " + level)
+  }
+  assert.equal(requests.at(-1).args.issues[0].level, 'critical', 'legacy names still map')
+  assert.equal(requests[0].args.issues[0].level, 'toString')
+})
+
+test('㉓ fix: an implementer that returns empty text is implemented again', async () => {
+  const { result, prompts } = await runScript(SCRIPTS.fix, { task: 'T', issues: [{ level: 'critical', issue: 'X1' }] }, {
+    worker: ['', '   ', 'fixed it'],
+    checker: [mk([])],
+  })
+  assert.equal(promptsOf(prompts, 'Implement ').length, 3, 'blank output → the step runs again')
+  assert.equal(promptsOf(prompts, 'Check ').length, 1, 'no check of a blank result')
+  assert.strictEqual(result.converged, true)
+  assert.strictEqual(result.rounds, 3)
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ㉔ dsh loads lib/types/index.js, not src/: the built output must match the
+//    source (rebuild with `pnpm run build` after changing src/index.ts).
+// ════════════════════════════════════════════════════════════════════════════
+test('㉔ lib/types/index.js matches src/index.ts', async () => {
+  const LIB = readFileSync(new URL('../lib/types/index.js', import.meta.url), 'utf8')
+  const fromSrc = evaluateModuleInVm(SRC)
+  const fromLib = evaluateModuleInVm(LIB, { typescript: false })
+  const stale = 'lib/ is out of date with src/ — run `pnpm run build` and commit lib/'
+  for (const key of ['CHECKUP_SCRIPT', 'FIX_SCRIPT', 'REVIEW_SCRIPT', 'INLINE_REPORT_LIMIT', 'name']) {
+    assert.strictEqual(fromLib[key], fromSrc[key], `${key}: ${stale}`)
+  }
+  const commands = (mod) => plain(mod.COMMANDS.map(({ withInput, ...c }) => ({ ...c, sample: withInput('X') })))
+  assert.deepEqual(commands(fromLib), commands(fromSrc), stale)
+
+  // Same tools, and they send the same requests for the same calls and settings.
+  const run = async (mod) => {
+    const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
+    mod.apply(ctx, { redteamMinLevel: 'minor', redteamMaxClaims: 0, fixMaxRounds: 4, checkerModel: 'm' })
+    const exec = { agent: { id: 'p' }, signal: new EventTarget() }
+    for (const d of defs) {
+      const args = d.name === 'fix' ? { task: 'T', issues: '[{"level":"major","issue":"X"}]' } : { target: 'T', angles: 'a; b' }
+      await d.execute(args, exec)
+    }
+    return {
+      tools: defs.map((d) => ({ name: d.name, description: d.description, parameters: d.parameters, output: d.output.schema })),
+      requests: requests.map((r) => ({ script: r.script, meta: r.meta, args: r.args, maxTotalAgents: r.maxTotalAgents })),
+    }
+  }
+  assert.deepEqual(plain(await run(fromLib)), plain(await run(fromSrc)), stale)
+
+  // And the same compact report.
+  const ctx = { get: () => ({ saveText: async () => ({ locator: '/spill/r.md', bytes: 1 }) }) }
+  const sample = { ok: true, report: '# Checkup report\n\nTarget: T\n\n## Problems\n' + 'x'.repeat(7000), issues: [{ level: 'major', issue: 'a\nb' }] }
+  assert.equal((await fromLib.compactReport(ctx, sample, 'inspect-checkup', { id: 's' }, {})).report,
+    (await fromSrc.compactReport(ctx, sample, 'inspect-checkup', { id: 's' }, {})).report, stale)
 })
