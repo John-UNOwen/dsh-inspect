@@ -31,8 +31,8 @@
  *
  * @module @dsh-external/dsh-inspect
  */
-import z from 'schemastery';
-import type { Context } from 'cordis';
+import z from '@deepseek-ai/schemastery';
+import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 export declare const name = "dsh-inspect";
 /**
@@ -47,35 +47,71 @@ export declare const name = "dsh-inspect";
  * tool is invoked without a provider — see `requireWorkflows` below.
  */
 export declare const inject: string[];
-/** Loader-validated plugin config (all keys optional: z.object keys default to optional). */
+/** A config value as written, or the live reference the loader passes for a volatile field. */
+export type Live<T> = T | {
+    get(): T | undefined;
+};
+/** The lowest level the red team attacks. */
+export type RedteamMinLevel = 'critical' | 'major' | 'minor';
+/**
+ * Plugin configuration. Every field is volatile: it can be edited in dsh
+ * (the Plugins page, or the profile's cordis.patch.yml) and applies to the
+ * next tool call without a restart.
+ */
 export interface Config {
     /** Child-provider override passed to every workflow run. */
-    subagentProvider?: string;
+    subagentProvider?: Live<string>;
     /** Per-run total-child ceiling for every workflow run. */
-    maxTotalAgents?: number;
+    maxTotalAgents?: Live<number>;
     /** Role-level model overrides, one per checkup/fix/review role. */
-    plannerModel?: string;
-    workerModel?: string;
-    checkerModel?: string;
-    reviewerModel?: string;
-    mergerModel?: string;
-    redteamModel?: string;
-    /** Claims the red team attacks per checkup/review run; criticals are always attacked. */
-    redteamMaxClaims?: number;
+    plannerModel?: Live<string>;
+    workerModel?: Live<string>;
+    checkerModel?: Live<string>;
+    reviewerModel?: Live<string>;
+    mergerModel?: Live<string>;
+    redteamModel?: Live<string>;
+    /** The lowest level the red team attacks: critical, major (critical and major) or minor (every claim). */
+    redteamMinLevel?: Live<RedteamMinLevel>;
+    /** Claims the red team attacks per checkup/review run; criticals are always attacked; 0 = no limit. */
+    redteamMaxClaims?: Live<number>;
+    /** Fix rounds before fix stops and reports what is left. */
+    fixMaxRounds?: Live<number>;
 }
 /**
- * Plugin configuration, validated by the cordis loader against this
- * schemastery schema before `apply` runs (official annotation pattern:
- * packages/workflow/tool-workflow/src/index.ts). Values that are present but
- * type-invalid (or violate constraints) fail loud at load; missing keys are
- * treated as optional by schemastery (z.object keys default to optional) and
- * pass silently, so defaults are applied by `apply` via optionalString /
- * positiveInt.
+ * Config schema. Every field is `.volatile()`, so dsh offers it for editing
+ * and the loader hands `apply` a live reference instead of a fixed value:
+ * an edit applies to the next tool call, without remounting the plugin.
+ * The loader validates against this schema; `resolveSettings` re-checks each
+ * read, so programmatic callers that skip the loader still fail loud.
  */
-export declare const Config: z<Config>;
+export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    redteamMinLevel: z<"critical" | "major" | "minor", "critical" | "major" | "minor", "volatile-defined">;
+    redteamMaxClaims: z<number, number, "volatile-defined">;
+    fixMaxRounds: z<number, number, "volatile-defined">;
+    maxTotalAgents: z<number, number, "volatile">;
+    subagentProvider: z<string, string, "volatile">;
+    plannerModel: z<string, string, "volatile">;
+    workerModel: z<string, string, "volatile">;
+    checkerModel: z<string, string, "volatile">;
+    reviewerModel: z<string, string, "volatile">;
+    mergerModel: z<string, string, "volatile">;
+    redteamModel: z<string, string, "volatile">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    redteamMinLevel: z<"critical" | "major" | "minor", "critical" | "major" | "minor", "volatile-defined">;
+    redteamMaxClaims: z<number, number, "volatile-defined">;
+    fixMaxRounds: z<number, number, "volatile-defined">;
+    maxTotalAgents: z<number, number, "volatile">;
+    subagentProvider: z<string, string, "volatile">;
+    plannerModel: z<string, string, "volatile">;
+    workerModel: z<string, string, "volatile">;
+    checkerModel: z<string, string, "volatile">;
+    reviewerModel: z<string, string, "volatile">;
+    mergerModel: z<string, string, "volatile">;
+    redteamModel: z<string, string, "volatile">;
+}>>, "plain">;
 /** Severity levels, strongest first. */
 declare const LEVELS: readonly ["critical", "major", "minor"];
-/** Red-team tags on a returned issue (minor issues are not attacked and carry none). */
+/** Red-team tags on a returned issue (issues below redteamMinLevel are not attacked and carry none). */
 declare const VERDICT_TAGS: readonly ["confirmed", "downgraded", "unverified", "not attacked"];
 /** One graded issue as produced by the checkup/review pipelines. */
 type Issue = {
@@ -157,3 +193,4 @@ export declare function compactReport(ctx: Context, out: ToolResult, workflowNam
  */
 export declare function splitList(raw: unknown, label?: string): string[];
 export {};
+//# sourceMappingURL=index.d.ts.map

@@ -12,11 +12,34 @@ Fork of [omdsh-dev/dsh-inspect](https://github.com/omdsh-dev/dsh-inspect): the `
 - **Slash commands.** Type `/` in the dsh web app: `/checkup` (find problems — empty checks the whole project), `/fix` (empty fixes the latest checkup/review findings) and `/inspect-review` (empty reviews the uncommitted changes). Each takes free-form input and hands the request to the agent, which calls the tool. `/review` is left to other review plugins such as @michengai/dsh-code-review; if another plugin already owns one of these names, that command is skipped and the rest still load.
 - **No recursion.** Workflow sub-agents see the same tools as their parent; `checkup` / `fix` / `review` refuse to start from inside a workflow sub-agent, so a sub-agent cannot set off nested runs without bound.
 - **Angle lists keep their details.** `angles` / `dimensions` split on the strongest separator present — one per line, else `;`, else `,` — and never inside brackets, so `accounting (cash, fees); data (panel, dates)` is two angles. Input that is ambiguous is rejected with a message instead of guessed: `;` and `,` both separating items on one line (`security, edge cases; performance`), text with no items left after splitting, or a non-string value. Put one angle per line to keep any `;` or `,` inside an angle.
-- **A red team that checks with tools.** In `checkup` and `review`, every critical and major claim gets its own attacker after deduplication, criticals first. The attacker sees the target, the context and that one claim, and tries to break it: does the cited code exist, can a real caller reach it, does a guard prevent it, is it intended, can it be reproduced. It returns confirmed / refuted / downgraded / unverified with what it checked and the deciding evidence. A verdict without both counts as unverified, a downgrade can only lower a level, and an unverified critical drops to major. Refuted claims are removed but stay listed in the report with their counter-evidence. Each returned issue carries its `verdict`. Up to `redteamMaxClaims` claims are attacked per run (default 6); criticals are always attacked. With the bundle's one-at-a-time engine setting, attackers run one after another.
+- **A red team that checks with tools.** In `checkup` and `review`, every critical and major claim (or every claim, see [Settings](#settings)) gets its own attacker after deduplication, criticals first. The attacker sees the target, the context and that one claim, and tries to break it: does the cited code exist, can a real caller reach it, does a guard prevent it, is it intended, can it be reproduced. It returns confirmed / refuted / downgraded / unverified with what it checked and the deciding evidence. A verdict without both counts as unverified, a downgrade can only lower a level, and an unverified critical drops to major. Refuted claims are removed but stay listed in the report with their counter-evidence. Each returned issue carries its `verdict`. Up to `redteamMaxClaims` claims are attacked per run (default 6, `0` = no limit); criticals are always attacked. With the bundle's one-at-a-time engine setting, attackers run one after another.
 - **Merging cannot lose or re-grade problems.** Findings are numbered and the merger returns the ids each merged item combines. A merged item takes the highest level of its sources, a finding the merger leaves out is added back, and an item that cites no finding is dropped. In `review`, a merger that drops a critical can therefore no longer make the review pass.
 - **Results reach the engine.** Prompts tell agents to answer through the structured output tool instead of "JSON only" (a plain-text JSON answer is not recorded and counted as no result). Checkers and reviewers must give evidence, and every grading prompt uses a concrete severity rubric. The review brief says how to check a design or document, not only code.
 - **`fix` is safer to run.** Implementers run one at a time, since they share the working tree. Every round sees the overall task and acceptance criteria, round 1 included. When an implementer returns nothing, only that step is implemented again; when the checker returns nothing, the same work is re-checked without re-implementing it. The result includes `converged` and `remaining` (an issue list that can be passed straight back to `fix`).
 - **`review` verifies each fix separately.** Every entry in `fixed_issues` gets its own verifier, and the report records each fix as gone / still present / unverified. A fix that did not hold is a critical problem; an unverified fix leaves the verdict unconfirmed (`passed: false`).
+
+## Settings
+
+Every setting can be changed in dsh and applies to the next `checkup` / `fix` / `review` call, with no restart. In the dsh web app, open **Plugins**, then the **@dsh-external/dsh-inspect** bundle: its page has the form. **Save** checks the values and writes them to the profile's `cordis.patch.yml`. You can also edit that file by hand:
+
+```yaml
+- id: dsh-inspect
+  config:
+    redteamMinLevel: minor   # attack every claim, minor ones included
+    redteamMaxClaims: 0      # no limit
+    fixMaxRounds: 5
+```
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `redteamMinLevel` | `major` | Which claims the red team attacks: `critical` (critical only), `major` (critical and major) or `minor` (every claim). Claims below it are kept without a verdict. |
+| `redteamMaxClaims` | `6` | Most claims attacked per run; `0` = no limit. Criticals are always attacked, even over the limit; the rest go in order of level. Each attacked claim is one more sub-agent. |
+| `fixMaxRounds` | `3` | Implement-and-check rounds before `fix` stops and returns what is left (1–20). |
+| `maxTotalAgents` | engine ceiling (1000) | Most sub-agents one run may start. |
+| `subagentProvider` | engine default | Sub-agent provider for every run. |
+| `checkerModel`, `reviewerModel`, `mergerModel`, `redteamModel`, `plannerModel`, `workerModel` | inherit | A model per role. A `redteamModel` different from `checkerModel` gives a more independent attack. |
+
+To have the red team attack everything a large checkup finds, set **Claims to attack** to *Every claim* and **Most claims attacked per run** to `0`.
 
 ## Install
 
@@ -190,7 +213,7 @@ dsh plugin --profile <profile> remove @dsh-external/dsh-inspect
 | `subagentProvider`                                                                                 | 引擎默认 `spawn` | 子代理 provider                              |
 | `maxTotalAgents`                                                                                   | 引擎上限         | 整次运行子代理总数上限                               |
 | `plannerModel` / `workerModel` / `checkerModel` / `reviewerModel` / `mergerModel` / `redteamModel` | 继承父配置        | 角色级模型分层（规划/实现/检查/复查/汇总/红队建议用不同模型，异源对抗更有效） |
-| `redteamMaxClaims` (fork)                                                                          | 6            | Claims the red team attacks per checkup/review run; criticals are always attacked. A `redteamModel` different from `checkerModel` gives a more independent attack. |
+| `redteamMinLevel` / `redteamMaxClaims` / `fixMaxRounds` (fork)                                   | `major` / 6 / 3 | See [Settings](#settings) above. |
 
 
 ## 设计说明

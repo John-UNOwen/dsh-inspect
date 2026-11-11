@@ -18,7 +18,8 @@
  * verdicts, enforcement, cap, failures); ③ failed agents are reported, never
  * passed off as clean; ④ review passed states; ⑤–⑦ fix convergence; ⑪ fix
  * context; ⑧–⑩ tool layer; ⑫–⑱ engine wiring, guards, parsing, reports,
- * commands; ⑲ merge accountability; ⑳ fix verification in review.
+ * commands; ⑲ merge accountability; ⑳ fix verification in review; ㉑ live
+ * settings; ㉒ the Plugins-page settings form (client/index.js).
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -237,12 +238,64 @@ test('② red team: criticals first and always; the cap applies to the rest', as
   assert.ok(result.report.includes('Attacked 4 of 7'))
   assert.ok(result.report.includes('3 were over the redteamMaxClaims limit'))
 
+  const one = await runScript(SCRIPTS.checkup, { target: 'T', redteamMax: 1 }, {
+    checker: [mk([C(1), C(2), J(1)]), mk([]), mk([])],
+    merger: [echoMerger],
+    redteam: attackers({ C1: V('confirmed'), C2: V('confirmed') }),
+  })
+  assert.deepEqual(promptsOf(one.prompts, 'Red team · ').map(claimOf), ['C1', 'C2'], 'a cap below the critical count still attacks every critical')
+
+  const J5 = [1, 2, 3, 4, 5].map(J)
   const zero = await runScript(SCRIPTS.checkup, { target: 'T', redteamMax: 0 }, {
-    checker: [mk([C(1), J(1)]), mk([]), mk([])],
+    checker: [mk([C(1), ...J5]), mk([]), mk([])],
+    merger: [echoMerger],
+    redteam: () => V('confirmed'),
+  })
+  assert.equal(promptsOf(zero.prompts, 'Red team · ').length, 6, 'a cap of 0 means no limit')
+  assert.ok(zero.result.report.includes('Attacked 6 of 6 critical/major claim(s).'))
+})
+
+test('② red team: redteamMinLevel picks the attacked levels', async () => {
+  const C = { level: 'critical', issue: 'C1', evidence: 'e' }
+  const J = { level: 'major', issue: 'J1', evidence: 'e' }
+  const N = (i) => ({ level: 'minor', issue: 'N' + i, evidence: 'e' })
+
+  // minor: every claim, minors last; a refuted minor is removed like any other.
+  const all = await runScript(SCRIPTS.checkup, { target: 'T', redteamMinLevel: 'minor', redteamMax: 0 }, {
+    checker: [mk([N(1), J, C, N(2)]), mk([]), mk([])],
+    merger: [echoMerger],
+    redteam: attackers({ C1: V('confirmed'), J1: V('confirmed'), N1: V('refuted'), N2: V('unverified') }),
+  })
+  assert.deepEqual(promptsOf(all.prompts, 'Red team · ').map(claimOf), ['C1', 'J1', 'N1', 'N2'])
+  const got = byIssue(all.result.issues)
+  assert.ok(!('N1' in got), 'refuted minor removed')
+  assert.equal(got.N2.verdict, 'unverified')
+  assert.equal(got.N2.level, 'minor')
+  assert.ok(all.result.report.includes('Attacked 4 of 4 claim(s).'))
+
+  // minor with a cap: minors over the cap are marked "not attacked".
+  const capped = await runScript(SCRIPTS.checkup, { target: 'T', redteamMinLevel: 'minor', redteamMax: 2 }, {
+    checker: [mk([N(1), J, C]), mk([]), mk([])],
+    merger: [echoMerger],
+    redteam: attackers({ C1: V('confirmed'), J1: V('confirmed') }),
+  })
+  assert.equal(byIssue(capped.result.issues).N1.verdict, 'not attacked')
+
+  // critical: majors and minors are not attacked and carry no verdict.
+  const crit = await runScript(SCRIPTS.review, { target: 'T', redteamMinLevel: 'critical' }, {
+    reviewer: [mk([J, C, N(1)]), mk([]), mk([])],
     merger: [echoMerger],
     redteam: attackers({ C1: V('confirmed') }),
   })
-  assert.deepEqual(promptsOf(zero.prompts, 'Red team · ').map(claimOf), ['C1'], 'a cap of 0 still attacks every critical')
+  assert.deepEqual(promptsOf(crit.prompts, 'Red team · ').map(claimOf), ['C1'])
+  const cg = byIssue(crit.result.issues)
+  assert.ok(!('verdict' in cg.J1) && !('verdict' in cg.N1), 'below the level: no verdict')
+  assert.ok(crit.result.report.includes('Attacked 1 of 1 critical claim(s).'))
+
+  const none = await runScript(SCRIPTS.checkup, { target: 'T', redteamMinLevel: 'critical' }, {
+    checker: [mk([J]), mk([]), mk([])],
+  })
+  assert.ok(none.result.report.includes('(No critical problems to attack.)'))
 })
 
 test('② red team: nothing critical or major → no attacker runs', async () => {
@@ -483,6 +536,14 @@ test('⑦ rounds exhausted → remaining problems listed and returned', async ()
   assert.ok(conclusion.includes('Feed the remaining problems back into fix to continue.'))
   assert.strictEqual(result.converged, false)
   assert.deepEqual(plain(result.remaining), issues4, 'remaining is a valid issue list for the next fix call')
+
+  // maxRounds (the fixMaxRounds setting) moves the limit.
+  const one = await runScript(SCRIPTS.fix, { task: 'T', issues: [P(1)], maxRounds: 1 }, {
+    worker: ['w1'],
+    checker: [mk([P(1)])],
+  })
+  assert.strictEqual(one.result.rounds, 1)
+  assert.ok(one.result.report.includes('exceeded the 1-round limit'))
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -659,7 +720,7 @@ function loadPlugin() {
 function evaluateModuleInVm() {
   let src = SRC
   src = stripTypeScriptTypes(src) // throws on non-erasable syntax — keeps the source portable
-  src = src.replace("import z from 'schemastery'", '')
+  src = src.replace("import z from '@deepseek-ai/schemastery'", '')
   src = src.replace("import { defineTool } from '@deepseek-ai/dsh-tools'", '')
   src = src.replace("import { createUserMessage } from '@deepseek-ai/dsh-llm'", '')
   src = src.replaceAll(/\bexport\s+/g, '')
@@ -1065,6 +1126,68 @@ test('⑧ runWorkflow 透传 issues/rounds/passed', async () => {
   assert.ok(!('redteamMax' in requests[0].args), 'not configured → not sent')
   assert.throws(() => mod.apply(stubContext(() => ({})).ctx, { redteamMaxClaims: -1 }), /non-negative integer/)
   assert.deepEqual(plain(requests[2].meta.phases).map((p) => p.title), ['Review', 'Red team', 'Verify fixes'], 'review declares every phase it enters')
+  assert.equal(plain(requests[1].meta.phases).length, 7, 'fix declares Plan + 3 implement + 3 check rounds by default')
+  assert.ok(!('maxRounds' in requests[1].args), 'fixMaxRounds not configured → not sent')
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ㉑ Settings are volatile: edits in dsh settings apply to the next call
+// ════════════════════════════════════════════════════════════════════════════
+test('㉑ settings: live references are re-read on every call', async () => {
+  const { mod } = await loadPlugin()
+  const live = (value) => ({ value, get() { return this.value } })
+  const cfg = {
+    redteamMaxClaims: live(6),
+    redteamMinLevel: live('major'),
+    fixMaxRounds: live(undefined),
+    maxTotalAgents: live(undefined),
+    checkerModel: live(undefined),
+    subagentProvider: live(''),
+  }
+  const { ctx, defs, requests } = stubContext(() => ({ report: 'r' }))
+  mod.apply(ctx, cfg)
+  const byName = Object.fromEntries(defs.map((d) => [d.name, d]))
+  const exec = { agent: { id: 'parent' }, signal: new EventTarget() }
+
+  await byName.checkup.execute({ target: 'T' }, exec)
+  assert.equal(requests[0].args.redteamMax, 6)
+  assert.equal(requests[0].args.redteamMinLevel, 'major')
+  assert.ok(!('models' in requests[0].args) && !('maxTotalAgents' in requests[0]) && !('subagentProvider' in requests[0]),
+    'empty settings are not sent')
+
+  // Edit everything, as a save on the Plugins page would.
+  cfg.redteamMaxClaims.value = 0
+  cfg.redteamMinLevel.value = 'minor'
+  cfg.fixMaxRounds.value = 5
+  cfg.maxTotalAgents.value = 200
+  cfg.checkerModel.value = 'deepseek-reasoner'
+  cfg.subagentProvider.value = 'spawn'
+  await byName.checkup.execute({ target: 'T' }, exec)
+  await byName.fix.execute({ task: 'T' }, exec)
+  assert.equal(requests[1].args.redteamMax, 0)
+  assert.equal(requests[1].args.redteamMinLevel, 'minor')
+  assert.equal(requests[1].maxTotalAgents, 200)
+  assert.equal(requests[1].subagentProvider, 'spawn')
+  assert.deepEqual(plain(requests[1].args.models), { checker: 'deepseek-reasoner' })
+  assert.equal(requests[2].args.maxRounds, 5)
+  assert.deepEqual(plain(requests[2].meta.phases).map((p) => p.title), [
+    'Plan',
+    ...[1, 2, 3, 4, 5].map((i) => 'Implement · round ' + i),
+    ...[1, 2, 3, 4, 5].map((i) => 'Check · round ' + i),
+  ], 'every configured round is declared as a phase')
+
+  // A later bad value keeps the last good one (the loader validates first; this guards programmatic callers).
+  cfg.redteamMinLevel.value = 'everything'
+  cfg.fixMaxRounds.value = 0
+  await byName.checkup.execute({ target: 'T' }, exec)
+  await byName.fix.execute({ task: 'T' }, exec)
+  assert.equal(requests[3].args.redteamMinLevel, 'minor')
+  assert.equal(requests[4].args.maxRounds, 5)
+
+  // A bad first value fails loud in apply.
+  assert.throws(() => mod.apply(stubContext(() => ({})).ctx, { redteamMinLevel: 'all' }), /redteamMinLevel/)
+  assert.throws(() => mod.apply(stubContext(() => ({})).ctx, { fixMaxRounds: 21 }), /at most 20/)
+  assert.throws(() => mod.apply(stubContext(() => ({})).ctx, { fixMaxRounds: live(0) }), /positive integer/)
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1411,6 +1534,51 @@ test('⑱ slash commands register, submit follow-ups, and tolerate a taken name'
   const injected = []
   c2.inject = (deps, cb) => { injected.push(Array.from(deps)); cb({ commands: { register: (d) => injected.push(d.name) } }) }
   mod.apply(c2, {})
-  assert.deepEqual(injected, [['commands'], 'checkup', 'fix', 'inspect-review'])
+  assert.deepEqual(injected, [['commands'], 'checkup', 'fix', 'inspect-review', ['settings']], 'a settings scope without configure is ignored')
   mod.registerCommands({})
+
+  // With the settings service, the plugin says it ships its own page (client/index.js).
+  const { ctx: c3 } = stubContext(() => ({ report: 'r' }))
+  c3.fiber = { id: 'fiber' }
+  const policies = []
+  c3.inject = (deps, cb) => {
+    if (deps[0] !== 'settings') return
+    cb({ settings: { configure: (policy, owner) => { policies.push([policy, owner]); return () => {} } }, effect: (fn) => fn() })
+  }
+  mod.apply(c3, {})
+  assert.equal(policies.length, 1)
+  assert.deepEqual(plain(policies[0][0]), { auto: false })
+  assert.strictEqual(policies[0][1], c3.fiber, 'the policy names the plugin fiber')
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// ㉒ The Plugins-page form (client/index.js) covers every setting and parses
+//    drafts the way the Config schema accepts them.
+// ════════════════════════════════════════════════════════════════════════════
+test('㉒ settings form: a field for every Config key, drafts parsed like the schema', () => {
+  let registration
+  const sandbox = { window: { __ModuleLoader__: { load: (r) => { registration = r } } } }
+  vm.runInNewContext(readFileSync(new URL('../client/index.js', import.meta.url), 'utf8'), sandbox)
+  assert.equal(registration.id, '@dsh-external/dsh-inspect', 'registered under the package name')
+  const client = registration.factory(() => { throw new Error('no require at load time') })
+  assert.deepEqual(Array.from(client.inject), ['slots', 'locale', 'configForms'])
+  const { integerField, textField, choiceField, FIELD_KEYS } = client.__fields
+
+  // Every key of the Config interface has a form field, and nothing else does.
+  const start = SRC.indexOf('export interface Config {')
+  const iface = SRC.slice(start, SRC.indexOf('\n}\n', start))
+  const configKeys = [...iface.matchAll(/^  (\w+)\?: Live</gm)].map((m) => m[1]).sort()
+  assert.ok(configKeys.length >= 11)
+  assert.deepEqual(Object.values(FIELD_KEYS).sort(), configKeys)
+
+  const rounds = integerField('fixMaxRounds', 1, 20)
+  assert.deepEqual(plain(rounds.parse('5')), { kind: 'set', value: 5 })
+  assert.deepEqual(plain(rounds.parse(' ')), { kind: 'clear' })
+  for (const bad of ['0', '21', '2.5', '-1', 'x']) assert.equal(rounds.parse(bad), undefined, bad)
+  assert.deepEqual(plain(integerField('redteamMaxClaims', 0, Number.MAX_SAFE_INTEGER).parse('0')), { kind: 'set', value: 0 }, '0 = no limit is accepted')
+  assert.deepEqual(plain(textField('checkerModel').parse('  m  ')), { kind: 'set', value: 'm' })
+  assert.deepEqual(plain(textField('checkerModel').parse('   ')), { kind: 'clear' }, 'blank inherits')
+  const level = choiceField('redteamMinLevel', ['critical', 'major', 'minor'])
+  assert.deepEqual(plain(level.parse('minor')), { kind: 'set', value: 'minor' })
+  assert.equal(level.parse('all'), undefined)
 })

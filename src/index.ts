@@ -32,10 +32,12 @@
  * @module @dsh-external/dsh-inspect
  */
 
-import z from 'schemastery'
+// The dsh fork of schemastery: its `.volatile()` fields are what dsh settings
+// and the Plugins page can edit, and what the loader updates without a restart.
+import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 // Type-only: brings the `ctx.workflowEngine` Context augmentation into this program.
 import type { WorkflowMeta } from '@deepseek-ai/dsh-workflow'
@@ -55,46 +57,81 @@ export const name = 'dsh-inspect'
  */
 export const inject = ['tools']
 
-/** Loader-validated plugin config (all keys optional: z.object keys default to optional). */
-export interface Config {
-  /** Child-provider override passed to every workflow run. */
-  subagentProvider?: string
-  /** Per-run total-child ceiling for every workflow run. */
-  maxTotalAgents?: number
-  /** Role-level model overrides, one per checkup/fix/review role. */
-  plannerModel?: string
-  workerModel?: string
-  checkerModel?: string
-  reviewerModel?: string
-  mergerModel?: string
-  redteamModel?: string
-  /** Claims the red team attacks per checkup/review run; criticals are always attacked. */
-  redteamMaxClaims?: number
-}
+/** A config value as written, or the live reference the loader passes for a volatile field. */
+export type Live<T> = T | { get(): T | undefined }
+
+/** The lowest level the red team attacks. */
+export type RedteamMinLevel = 'critical' | 'major' | 'minor'
 
 /**
- * Plugin configuration, validated by the cordis loader against this
- * schemastery schema before `apply` runs (official annotation pattern:
- * packages/workflow/tool-workflow/src/index.ts). Values that are present but
- * type-invalid (or violate constraints) fail loud at load; missing keys are
- * treated as optional by schemastery (z.object keys default to optional) and
- * pass silently, so defaults are applied by `apply` via optionalString /
- * positiveInt.
+ * Plugin configuration. Every field is volatile: it can be edited in dsh
+ * (the Plugins page, or the profile's cordis.patch.yml) and applies to the
+ * next tool call without a restart.
  */
-export const Config: z<Config> = z.object({
+export interface Config {
   /** Child-provider override passed to every workflow run. */
-  subagentProvider: z.string(),
+  subagentProvider?: Live<string>
   /** Per-run total-child ceiling for every workflow run. */
-  maxTotalAgents: z.natural().min(1),
+  maxTotalAgents?: Live<number>
   /** Role-level model overrides, one per checkup/fix/review role. */
-  plannerModel: z.string(),
-  workerModel: z.string(),
-  checkerModel: z.string(),
-  reviewerModel: z.string(),
-  mergerModel: z.string(),
-  redteamModel: z.string(),
-  /** Claims the red team attacks per checkup/review run (default 6); criticals are always attacked. */
-  redteamMaxClaims: z.natural(),
+  plannerModel?: Live<string>
+  workerModel?: Live<string>
+  checkerModel?: Live<string>
+  reviewerModel?: Live<string>
+  mergerModel?: Live<string>
+  redteamModel?: Live<string>
+  /** The lowest level the red team attacks: critical, major (critical and major) or minor (every claim). */
+  redteamMinLevel?: Live<RedteamMinLevel>
+  /** Claims the red team attacks per checkup/review run; criticals are always attacked; 0 = no limit. */
+  redteamMaxClaims?: Live<number>
+  /** Fix rounds before fix stops and reports what is left. */
+  fixMaxRounds?: Live<number>
+}
+
+/** Red-team cap unless configured; criticals are always attacked. */
+const REDTEAM_MAX_DEFAULT = 6
+/** Fix rounds unless configured. */
+const FIX_ROUNDS_DEFAULT = 3
+/** Upper bound for fixMaxRounds: every round is declared as two workflow phases up front. */
+const FIX_ROUNDS_MAX = 20
+
+/**
+ * Config schema. Every field is `.volatile()`, so dsh offers it for editing
+ * and the loader hands `apply` a live reference instead of a fixed value:
+ * an edit applies to the next tool call, without remounting the plugin.
+ * The loader validates against this schema; `resolveSettings` re-checks each
+ * read, so programmatic callers that skip the loader still fail loud.
+ */
+export const Config = z.object({
+  redteamMinLevel: z.union(['critical', 'major', 'minor'])
+    .default('major')
+    .description('Lowest level the red team attacks: critical, major (critical and major) or minor (every claim).')
+    .volatile(),
+  redteamMaxClaims: z.natural()
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(REDTEAM_MAX_DEFAULT)
+    .description('Most claims the red team attacks per checkup/review run; criticals are always attacked. 0 = no limit.')
+    .volatile(),
+  fixMaxRounds: z.natural()
+    .min(1)
+    .max(FIX_ROUNDS_MAX)
+    .default(FIX_ROUNDS_DEFAULT)
+    .description('Fix rounds before fix stops and reports the problems that remain.')
+    .volatile(),
+  maxTotalAgents: z.natural()
+    .min(1)
+    .max(Number.MAX_SAFE_INTEGER)
+    .description('Total sub-agents one checkup/fix/review run may start; empty = the workflow engine\'s ceiling.')
+    .volatile(),
+  subagentProvider: z.string()
+    .description('Sub-agent provider for every run; empty = the workflow engine default.')
+    .volatile(),
+  plannerModel: z.string().description('Model for the fix planner; empty = inherit.').volatile(),
+  workerModel: z.string().description('Model for fix implementers; empty = inherit.').volatile(),
+  checkerModel: z.string().description('Model for checkup checkers and the fix checker; empty = inherit.').volatile(),
+  reviewerModel: z.string().description('Model for review reviewers and fix verifiers; empty = inherit.').volatile(),
+  mergerModel: z.string().description('Model for merging findings; empty = inherit.').volatile(),
+  redteamModel: z.string().description('Model for red-team attackers; empty = inherit.').volatile(),
 })
 
 /** Config key → script-side role field for the role-level model overrides. */
@@ -115,7 +152,7 @@ const LEVELS = ['critical', 'major', 'minor'] as const
 /** Pre-fork (Chinese) level names → English, accepted on input for issue lists produced by older versions. */
 const LEGACY_LEVELS: Record<string, Issue['level']> = { '严重': 'critical', '一般': 'major', '建议': 'minor' }
 
-/** Red-team tags on a returned issue (minor issues are not attacked and carry none). */
+/** Red-team tags on a returned issue (issues below redteamMinLevel are not attacked and carry none). */
 const VERDICT_TAGS = ['confirmed', 'downgraded', 'unverified', 'not attacked'] as const
 
 /** Concrete severity rubric, shared by every prompt that grades a problem. */
@@ -237,9 +274,6 @@ type Issue = {
   reproduce?: string
   verdict?: typeof VERDICT_TAGS[number]
 }
-
-/** How many claims the red team attacks per run unless configured (criticals are always attacked). */
-const REDTEAM_MAX_DEFAULT = 6
 
 // ── Script-side helpers shared by checkup and review ────────────────────────
 //
@@ -378,13 +412,17 @@ function attackPrompt(it, opts) {
     + 'A confirmed, refuted or downgraded verdict without both is counted as unverified. ' + STRUCTURED
 }
 
+// opts.minLevel: the lowest level attacked ('critical' | 'major' | 'minor').
+// opts.max: most claims attacked, criticals always included; 0 = no limit.
 async function redTeam(items, opts) {
+  const floor = RANK[opts.minLevel] ?? RANK.major
   const eligible = items.map((it, i) => ({ it, i }))
-    .filter(({ it }) => it.level !== 'minor')
+    .filter(({ it }) => RANK[it.level] >= floor)
     .sort((a, b) => RANK[b.it.level] - RANK[a.it.level] || a.i - b.i)
   const critical = eligible.filter(({ it }) => it.level === 'critical')
   const others = eligible.filter(({ it }) => it.level !== 'critical')
-  const selected = [...critical, ...others.slice(0, Math.max(0, opts.max - critical.length))]
+  const room = opts.max > 0 ? Math.max(0, opts.max - critical.length) : others.length
+  const selected = [...critical, ...others.slice(0, room)]
   let results = []
   if (selected.length > 0) {
     phase(opts.phaseTitle)
@@ -402,7 +440,8 @@ async function redTeam(items, opts) {
   items.forEach((it, i) => {
     const base = plainIssue(it)
     if (!verdictAt.has(i)) {
-      kept.push(it.level === 'minor' ? base : { ...base, verdict: 'not attacked' })
+      // Below the attacked levels: no verdict. Eligible but over the cap: "not attacked".
+      kept.push(RANK[it.level] < floor ? base : { ...base, verdict: 'not attacked' })
       return
     }
     const v = verdictAt.get(i)
@@ -429,18 +468,19 @@ async function redTeam(items, opts) {
     })
     if (verdict !== 'refuted') kept.push({ ...base, level, verdict })
   })
-  return { kept, records, failed, eligible: eligible.length, attacked: selected.length }
+  const scope = floor === RANK.critical ? 'critical' : floor === RANK.major ? 'critical/major' : ''
+  return { kept, records, failed, eligible: eligible.length, attacked: selected.length, scope }
 }
 
 function redTeamSection(rt) {
   const lines = ['## Red team']
   if (rt.eligible === 0) {
-    lines.push('(No critical or major problems to attack.)')
+    lines.push(rt.scope ? '(No ' + rt.scope.replace('/', ' or ') + ' problems to attack.)' : '(No problems to attack.)')
     return lines
   }
   const count = (v) => rt.records.filter((r) => r.verdict === v).length
   const skipped = rt.eligible - rt.attacked
-  lines.push('Attacked ' + rt.attacked + ' of ' + rt.eligible + ' critical/major claim(s).'
+  lines.push('Attacked ' + rt.attacked + ' of ' + rt.eligible + (rt.scope ? ' ' + rt.scope : '') + ' claim(s).'
     + (skipped > 0 ? ' ' + skipped + ' were over the redteamMaxClaims limit and are marked "not attacked".' : '')
     + (rt.failed > 0 ? ' ' + rt.failed + ' attacker(s) returned no result; those claims are kept and marked "not attacked".' : ''))
   lines.push('confirmed: ' + count('confirmed') + ' · downgraded: ' + count('downgraded')
@@ -471,10 +511,11 @@ const FINDING_RULES = '\n\nRequirements:\n'
 
 export const CHECKUP_SCRIPT = String.raw`${SHARED_SCRIPT}
 const FINDINGS_SCHEMA = ${JSON.stringify(FINDINGS_SCHEMA)}
-const { target, angles, context, models, redteamMax } = args
+const { target, angles, context, models, redteamMax, redteamMinLevel } = args
 const M = models ?? {}
 const ANGLES = Array.isArray(angles) && angles.length > 0 ? angles : ['implementation quality', 'edge cases and error handling', 'security and resources']
 const REDTEAM_MAX = typeof redteamMax === 'number' ? redteamMax : ${REDTEAM_MAX_DEFAULT}
+const REDTEAM_MIN = typeof redteamMinLevel === 'string' ? redteamMinLevel : 'major'
 const ADVERSARIAL = ${JSON.stringify(adversarialBrief('checker'))}
 
 phase('Check')
@@ -498,7 +539,7 @@ const findings = await parallel(ANGLES.map((a) => () => agent(
 // "no problems".
 const failedCheckers = findings.filter((f) => !f || !Array.isArray(f.issues)).length
 const merge = await mergeFindings(collectFindings(findings), 'Check', M.merger)
-const rt = await redTeam(merge.items, { target, context, max: REDTEAM_MAX, model: M.redteam, phaseTitle: 'Red team' })
+const rt = await redTeam(merge.items, { target, context, max: REDTEAM_MAX, minLevel: REDTEAM_MIN, model: M.redteam, phaseTitle: 'Red team' })
 const issues = rt.kept
 
 const notes = []
@@ -532,9 +573,9 @@ export const FIX_SCRIPT = String.raw`const PLAN_SCHEMA = ${JSON.stringify(PLAN_S
 const FINDINGS_SCHEMA = ${JSON.stringify(FINDINGS_SCHEMA)}
 const RUBRIC = ${JSON.stringify(RUBRIC)}
 const STRUCTURED = ${JSON.stringify(STRUCTURED)}
-const { task, issues, acceptance, models } = args
+const { task, issues, acceptance, models, maxRounds } = args
 const M = models ?? {}
-const MAX_ROUNDS = 3
+const MAX_ROUNDS = typeof maxRounds === 'number' && maxRounds >= 1 ? maxRounds : ${FIX_ROUNDS_DEFAULT}
 const filled = (s) => typeof s === 'string' && s.trim().length > 0
 // Every worker and checker prompt carries the overall task, from round 1 on.
 const TASK_LINES = 'Overall task: ' + task + (acceptance ? '\nOverall acceptance criteria: ' + acceptance : '')
@@ -725,10 +766,11 @@ return { report: parts.join('\n'), rounds: round, converged: pending.length === 
 export const REVIEW_SCRIPT = String.raw`${SHARED_SCRIPT}
 const FINDINGS_SCHEMA = ${JSON.stringify(FINDINGS_SCHEMA)}
 const VERIFY_SCHEMA = ${JSON.stringify(VERIFY_SCHEMA)}
-const { target, dimensions, context, fixed_issues, models, redteamMax } = args
+const { target, dimensions, context, fixed_issues, models, redteamMax, redteamMinLevel } = args
 const M = models ?? {}
 const DIMS = Array.isArray(dimensions) && dimensions.length > 0 ? dimensions : ['implementation quality', 'edge cases and error handling', 'security and resources']
 const REDTEAM_MAX = typeof redteamMax === 'number' ? redteamMax : ${REDTEAM_MAX_DEFAULT}
+const REDTEAM_MIN = typeof redteamMinLevel === 'string' ? redteamMinLevel : 'major'
 const FIXES = Array.isArray(fixed_issues) ? fixed_issues : []
 const ADVERSARIAL = ${JSON.stringify(adversarialBrief('reviewer'))}
 
@@ -751,7 +793,7 @@ const reviews = await parallel(DIMS.map((d) => () => agent(
 // reported, and the delivery verdict is then unconfirmed.
 const failedReviewers = reviews.filter((r) => !r || !Array.isArray(r.issues)).length
 const merge = await mergeFindings(collectFindings(reviews), 'Review', M.merger)
-const rt = await redTeam(merge.items, { target, context, max: REDTEAM_MAX, model: M.redteam, phaseTitle: 'Red team' })
+const rt = await redTeam(merge.items, { target, context, max: REDTEAM_MAX, minLevel: REDTEAM_MIN, model: M.redteam, phaseTitle: 'Red team' })
 
 // Each fix to verify gets its own verifier, so every fix ends with a recorded
 // status. A status without what was checked and the evidence is unverified.
@@ -895,13 +937,130 @@ function assertNotWorkflowChild(children: Set<string>, parent: Agent, tool: stri
 }
 
 /** Script-side role overrides from the validated config (omitted keys stay absent). */
-function modelsFrom(config: Config): Record<string, string> {
-  const models: Record<string, string> = {}
-  for (const [key, field] of MODEL_KEYS) {
-    const value = config[key]
-    if (value !== undefined) models[field] = value
+/** What one tool call uses from the settings, read when the call starts. */
+interface RunSettings {
+  /** Engine options for workflows.start. */
+  common: { subagentProvider?: string; maxTotalAgents?: number }
+  /** Role → model, for the script's `models` arg. */
+  models: Record<string, string>
+  /** Red-team args for checkup and review. */
+  redteam: { redteamMax?: number; redteamMinLevel?: RedteamMinLevel }
+  /** Fix rounds, or undefined for the script default. */
+  fixMaxRounds?: number
+}
+
+/** The value of a config field: a volatile reference is read, a plain value is used as is. */
+function readLive(raw: unknown): unknown {
+  if (typeof raw === 'object' && raw !== null && typeof (raw as { get?: unknown }).get === 'function') {
+    return (raw as { get(): unknown }).get()
   }
-  return models
+  return raw
+}
+
+/**
+ * A getter for one config field, re-read on every call so edits from dsh
+ * settings apply without a restart. `check` validates and normalizes (and
+ * throws on a bad value): the first read must pass, so misconfiguration
+ * fails loud in `apply`; a later bad value keeps the last good one.
+ */
+function liveField<T>(raw: unknown, check: (value: unknown) => T): () => T {
+  let last = check(readLive(raw))
+  return () => {
+    try {
+      last = check(readLive(raw))
+    } catch {
+      // Keep the last good value. The loader validates edits against the
+      // schema first, so this only guards programmatic callers.
+    }
+    return last
+  }
+}
+
+/** Trimmed string, or undefined for absent/empty (empty = inherit / engine default). */
+function optionalText(label: string) {
+  return (value: unknown): string | undefined => {
+    const text = optionalString(value as string | undefined, label)
+    return text === undefined || text.trim() === '' ? undefined : text.trim()
+  }
+}
+
+/** Positive integer up to max, or undefined when absent. */
+function optionalPositiveInt(label: string, max = Number.MAX_SAFE_INTEGER) {
+  return (value: unknown): number | undefined => {
+    if (value === undefined || value === null) return undefined
+    const n = positiveInt(value, 0, label)
+    if (n > max) throw new Error(`dsh-inspect: ${label} must be at most ${max}`)
+    return n
+  }
+}
+
+/** Live getters for every setting; `current()` reads them all for one tool call. */
+function resolveSettings(config: Config): () => RunSettings {
+  const subagentProvider = liveField(config.subagentProvider, optionalText('subagentProvider'))
+  // null/undefined both mean "leave the engine default": the key is omitted, never sent as 0.
+  const maxTotalAgents = liveField(config.maxTotalAgents, optionalPositiveInt('maxTotalAgents'))
+  const models = MODEL_KEYS.map(([key, field]) => [field, liveField(config[key], optionalText(key))] as const)
+  const redteamMax = liveField(config.redteamMaxClaims, (value) =>
+    value === undefined || value === null ? undefined : nonNegativeInt(value, 'redteamMaxClaims'))
+  const redteamMinLevel = liveField(config.redteamMinLevel, (value): RedteamMinLevel | undefined => {
+    if (value === undefined || value === null) return undefined
+    if (value === 'critical' || value === 'major' || value === 'minor') return value
+    throw new Error(`dsh-inspect: redteamMinLevel must be 'critical', 'major' or 'minor', got: ${JSON.stringify(value)}`)
+  })
+  const fixMaxRounds = liveField(config.fixMaxRounds, optionalPositiveInt('fixMaxRounds', FIX_ROUNDS_MAX))
+  return () => {
+    const provider = subagentProvider()
+    const total = maxTotalAgents()
+    const max = redteamMax()
+    const minLevel = redteamMinLevel()
+    const rounds = fixMaxRounds()
+    const roleModels: Record<string, string> = {}
+    for (const [field, read] of models) {
+      const model = read()
+      if (model !== undefined) roleModels[field] = model
+    }
+    return {
+      common: {
+        ...(provider !== undefined ? { subagentProvider: provider } : {}),
+        ...(total !== undefined ? { maxTotalAgents: total } : {}),
+      },
+      models: roleModels,
+      redteam: {
+        ...(max !== undefined ? { redteamMax: max } : {}),
+        ...(minLevel !== undefined ? { redteamMinLevel: minLevel } : {}),
+      },
+      ...(rounds !== undefined ? { fixMaxRounds: rounds } : {}),
+    }
+  }
+}
+
+/**
+ * The settings form lives on the Plugins page (client/index.js), so ask dsh
+ * settings not to generate one from the schema: `configure({ auto: false },
+ * fiber)` inside an optional `settings` child, as dsh-settings documents.
+ * Without the settings service this does nothing.
+ */
+function ownSettingsPage(ctx: Context): void {
+  if (typeof ctx.inject !== 'function') return
+  const fiber = (ctx as unknown as { fiber?: unknown }).fiber
+  ctx.inject(['settings'], (scope) => {
+    const service = (scope as unknown as { settings?: { configure?: (policy: object, owner?: unknown) => () => void } }).settings
+    if (typeof service?.configure !== 'function') return
+    scope.effect(() => service.configure?.({ auto: false }, fiber) ?? (() => {}), 'dsh-inspect: own settings page')
+  })
+}
+
+/** The fix workflow's phases: every round's titles are declared up front (the engine matches phase() by exact title). */
+function fixPhases(rounds: number): WorkflowMeta['phases'] {
+  const implement = Array.from({ length: rounds }, (_, i) => ({
+    title: 'Implement · round ' + (i + 1),
+    detail: 'Root cause → implement → verify via repro',
+  }))
+  const check = Array.from({ length: rounds }, (_, i) => ({
+    title: 'Check · round ' + (i + 1),
+    detail: 'Adversarial check, fix loop',
+  }))
+  return [{ title: 'Plan', detail: 'Steps with acceptance (or checkup issues)' }, ...implement, ...check]
 }
 
 /** One workflow run request as built by the tool registrations below. */
@@ -925,35 +1084,22 @@ type ToolResult = {
 export function apply(ctx: Context, config: Config = {}) {
   // Deliberately NOT checking the workflows dependency here: see
   // requireWorkflows — an apply-time failure hangs the whole loader group.
-  // The exported Config schema validates at load; these checks keep
-  // misconfiguration loud for programmatic callers that skip the loader.
-  const subagentProvider = optionalString(config.subagentProvider, 'subagentProvider')
-  for (const [key] of MODEL_KEYS) optionalString(config[key], key)
-  // null/undefined both mean "leave the engine default" (old JS contract:
-  // positiveInt(..., undefined, ...) omitted the key — keep it omitted).
-  const maxTotalAgents = config.maxTotalAgents === undefined || config.maxTotalAgents === null
-    ? undefined
-    : positiveInt(config.maxTotalAgents, 0, 'maxTotalAgents')
-  const models = modelsFrom(config)
-  const redteamMax = config.redteamMaxClaims === undefined || config.redteamMaxClaims === null
-    ? undefined
-    : nonNegativeInt(config.redteamMaxClaims, 'redteamMaxClaims')
-  const redteamArgs = redteamMax !== undefined ? { redteamMax } : {}
+  // The exported Config schema validates at load; resolveSettings re-checks
+  // (fail loud here for programmatic callers that skip the loader) and
+  // re-reads every field per tool call, so edits in dsh settings apply live.
+  const settings = resolveSettings(config)
   const workflowChildren = trackWorkflowChildren(ctx)
   // Slash commands (/checkup, /fix, /inspect-review). Registered in a child
   // fiber that waits for the `commands` service, so profiles without a
   // command UI still load the tools; see registerCommands.
   if (typeof ctx.inject === 'function') ctx.inject(['commands'], (cctx) => registerCommands(cctx))
-  const common: { subagentProvider?: string; maxTotalAgents?: number } = {
-    ...(subagentProvider !== undefined ? { subagentProvider } : {}),
-    ...(maxTotalAgents !== undefined ? { maxTotalAgents } : {}),
-  }
+  ownSettingsPage(ctx)
 
   ctx.tools.register(defineTool({
     name: 'checkup',
     description:
       'Problem-finding tool: sends several adversarial checker agents to examine the target (code / system / design) from different angles, '
-      + 'merges and deduplicates their findings, then a red team attacks each critical/major claim with tools (one attacker per claim: '
+      + 'merges and deduplicates their findings, then a red team attacks each claim with tools (critical and major by default; one attacker per claim: '
       + 'refuted claims are removed, unproven ones are marked unverified) — finding is suspicion, verification is conviction. '
       + 'Returns a problem list (critical / major / minor, with evidence and a red-team verdict). '
       + 'The problems found can be passed straight to the fix tool as repair tasks. '
@@ -985,22 +1131,23 @@ export function apply(ctx: Context, config: Config = {}) {
       const target = String(args.target).trim()
       if (target.length === 0) throw new Error('checkup: target must not be empty')
       const angles = splitList(args.angles, 'checkup: angles')
-      return runWorkflow(ctx, common, exec, {
+      const run = settings()
+      return runWorkflow(ctx, run.common, exec, {
         script: CHECKUP_SCRIPT,
         meta: {
           name: 'inspect-checkup',
           description: 'Parallel problem finding with deduped, graded issues.',
           phases: [
             { title: 'Check', detail: 'Parallel checkers + merge' },
-            { title: 'Red team', detail: 'One attacker per critical/major claim' },
+            { title: 'Red team', detail: 'One attacker per claim' },
           ],
         } satisfies WorkflowMeta,
         args: {
           target,
           ...(angles.length > 0 ? { angles } : {}),
-          ...redteamArgs,
+          ...run.redteam,
           ...(args.context !== undefined ? { context: String(args.context) } : {}),
-          ...(Object.keys(models).length > 0 ? { models } : {}),
+          ...(Object.keys(run.models).length > 0 ? { models: run.models } : {}),
         },
       }, parent, exec.signal)
     },
@@ -1046,28 +1193,20 @@ export function apply(ctx: Context, config: Config = {}) {
       const task = String(args.task).trim()
       if (task.length === 0) throw new Error('fix: task must not be empty')
       const issues = parseIssueList(args.issues, 'fix: issues')
-      return runWorkflow(ctx, common, exec, {
+      const run = settings()
+      return runWorkflow(ctx, run.common, exec, {
         script: FIX_SCRIPT,
         meta: {
           name: 'inspect-fix',
           description: 'Root cause (dataflow) → implement by data judgment → verify via repro → adversarial gate loop.',
-          phases: [
-            { title: 'Plan', detail: 'Steps with acceptance (or checkup issues)' },
-            // The engine matches phase() calls by exact title (workflow/types.ts), so each
-            // concrete round is declared — MAX_ROUNDS is 3 in the script.
-            { title: 'Implement · round 1', detail: 'Root cause → implement → verify via repro' },
-            { title: 'Implement · round 2', detail: 'Root cause → implement → verify via repro' },
-            { title: 'Implement · round 3', detail: 'Root cause → implement → verify via repro' },
-            { title: 'Check · round 1', detail: 'Adversarial check, fix loop' },
-            { title: 'Check · round 2', detail: 'Adversarial check, fix loop' },
-            { title: 'Check · round 3', detail: 'Adversarial check, fix loop' },
-          ],
+          phases: fixPhases(run.fixMaxRounds ?? FIX_ROUNDS_DEFAULT),
         } satisfies WorkflowMeta,
         args: {
           task,
           ...(issues !== undefined ? { issues } : {}),
           ...(args.acceptance !== undefined ? { acceptance: String(args.acceptance) } : {}),
-          ...(Object.keys(models).length > 0 ? { models } : {}),
+          ...(run.fixMaxRounds !== undefined ? { maxRounds: run.fixMaxRounds } : {}),
+          ...(Object.keys(run.models).length > 0 ? { models: run.models } : {}),
         },
       }, parent, exec.signal)
     },
@@ -1077,7 +1216,7 @@ export function apply(ctx: Context, config: Config = {}) {
     name: 'review',
     description:
       'Quality-review tool: sends several adversarial reviewer agents to review a deliverable (code / design / docs) from different angles, '
-      + 'merges and deduplicates their findings, and has a red team attack each critical/major claim, giving a graded problem report (critical / major / minor). '
+      + 'merges and deduplicates their findings, and has a red team attack each claim (critical and major by default), giving a graded problem report (critical / major / minor). '
       + 'Pass fixed_issues (a list of fixes to verify) and each fix gets its own verifier that re-runs the reproduction; the report records '
       + 'every fix as gone / still present / unverified, and a fix that did not hold is a critical problem. '
       + 'Use for: quality gates after a task, review before commit/delivery, design reviews.',
@@ -1111,24 +1250,25 @@ export function apply(ctx: Context, config: Config = {}) {
       if (target.length === 0) throw new Error('review: target must not be empty')
       const dims = splitList(args.dimensions, 'review: dimensions')
       const fixedIssues = parseIssueList(args.fixed_issues, 'review: fixed_issues')
-      return runWorkflow(ctx, common, exec, {
+      const run = settings()
+      return runWorkflow(ctx, run.common, exec, {
         script: REVIEW_SCRIPT,
         meta: {
           name: 'inspect-review',
           description: 'Parallel multi-angle quality review with deduped graded issues.',
           phases: [
             { title: 'Review', detail: 'Parallel reviewers + merge' },
-            { title: 'Red team', detail: 'One attacker per critical/major claim' },
+            { title: 'Red team', detail: 'One attacker per claim' },
             { title: 'Verify fixes', detail: 'One verifier per fixed issue' },
           ],
         } satisfies WorkflowMeta,
         args: {
           target,
           ...(dims.length > 0 ? { dimensions: dims } : {}),
-          ...redteamArgs,
+          ...run.redteam,
           ...(args.context !== undefined ? { context: String(args.context) } : {}),
           ...(fixedIssues !== undefined ? { fixed_issues: fixedIssues } : {}),
-          ...(Object.keys(models).length > 0 ? { models } : {}),
+          ...(Object.keys(run.models).length > 0 ? { models: run.models } : {}),
         },
       }, parent, exec.signal)
     },
@@ -1209,8 +1349,9 @@ export function registerCommands(ctx: Context): void {
           const input = String(rawInput ?? '').trim()
           agent.followup(createUserMessage({
             content: [{ type: 'text', text: input ? spec.withInput(input) : spec.empty }],
+            // A plugin-owned source kind; dsh's MessageSource union does not list plugin kinds.
             source: commandSource,
-          } as Parameters<typeof createUserMessage>[0]))
+          } as unknown as Parameters<typeof createUserMessage>[0]))
           return { kind: 'success', text: spec.ack }
         },
       })
